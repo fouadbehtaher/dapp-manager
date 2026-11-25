@@ -10,7 +10,7 @@ Status classes (never collapsed):
 NOTE: get_transaction_status alone says isError=0 for a hash that does not exist, so it is never used by itself."""
 import re, time
 from decimal import Decimal
-from .client import ApiError
+from .client import ApiError, clean
 
 HASH = re.compile(r'^0x[0-9a-fA-F]{64}$')
 
@@ -37,7 +37,7 @@ def check(client, chain, txhash):
     try:
         tx = client.call('get_transaction_by_hash', {'txhash': txhash, 'chainid': chain})
     except Exception as e:
-        out['detail'] = 'lookup error: ' + str(e)[:120]; return out
+        out['detail'] = 'lookup error: ' + clean(e, 120); return out
     if not tx:
         out['status'] = 'not_found'
         out['detail'] = 'Etherscan has no record of this hash on this chain (not broadcast / dropped / wrong chain / not indexed yet)'
@@ -52,7 +52,7 @@ def check(client, chain, txhash):
         rs = client.call('get_transaction_receipt_status', {'txhash': txhash, 'chainid': chain})
         st = (rs or {}).get('status') if isinstance(rs, dict) else None
     except Exception as e:
-        out['detail'] = 'receipt error: ' + str(e)[:120]; return out
+        out['detail'] = 'receipt error: ' + clean(e, 120); return out
     if st == '1':
         out['status'] = 'success'; out['detail'] = 'receipt status 1 (executed)'
     elif st == '0':
@@ -100,7 +100,7 @@ def gas_scan(client, store, chains):
             g = client.call('get_gas_oracle', {'chainid': ch})
             row = (float(g['SafeGasPrice']), float(g['ProposeGasPrice']), float(g['FastGasPrice']), float(g['suggestBaseFee']), int(g['LastBlock']))
         except Exception as e:  # any failure = unavailable sample, never a fake number
-            out.append((ch, None, str(e)[:100])); continue
+            out.append((ch, None, clean(e, 100))); continue
         store.add_gas(ch, *row)
         out.append((ch, row, ''))
         lo, hi = store.get_setting(f'gas_below_{ch}'), store.get_setting(f'gas_above_{ch}')
