@@ -78,3 +78,27 @@ MIT License.
 ## سكربتات النماذج الأولية (src/)
 
 السكربتات الأولى ما زالت في `src/` كما رُفعت سابقًا (تقرير محفظة وتقرير عقد بصيغة DOCX/PDF). الأداة المتكاملة هي `dappman/` أعلاه.
+
+## v0.6 (development, not published): event identity, provider boundary, on-chain NFT confirmation
+
+**Upgrading from v0.3-v0.5 (read this).** v0.5 could merge distinct events in one transaction into one stored row, so its
+counts and NFT lists can be wrong and the lost rows cannot be recovered locally. On first run v0.6 migrates the database in one
+transaction. Before that it writes a consistent SQLite online backup (WAL content included, integrity and row counts verified) to `<db>.pre-v2-<timestamp>.bak`; if the backup fails the migration is refused and the DB is untouched. To roll back, stop the tool and copy the `.bak` over the DB file. The old rows are kept in `txs_legacy` for audit only, are not
+counted, and sync checkpoints are reset. Rebuild history per watched wallet:
+
+    python3 -m dappman --db dappman.db scan
+    python3 -m dappman --db dappman.db sync 0xYOUR_ADDRESS --chain 1
+
+**Identity.** Internal transfers are keyed by the provider's trace id. Token transfers are keyed by contract, token id, from,
+to and amount. The free provider returns no log index for token transfers, so byte-identical events in one transaction cannot
+be told apart from provider duplicates: they are kept, flagged, and reported as `identity_ambiguous_rows` in `history`,
+`nfts`, the dashboard and MCP. A matching count is never proof of completeness.
+
+**On-chain confirmation.** `python3 -m dappman nfts 0xADDR --chains 1,137 --confirm` calls `ownerOf` / `balanceOf` through
+keyless public RPC endpoints (config.py) at one pinned block and prints the block and host. States: `confirmed_owner`,
+`not_owner`, `unknown` (reverts, unsupported contracts and RPC failures are `unknown`, never "not owned"). It confirms
+candidates found in your own history. It does not discover holdings the history lacks.
+A result is a snapshot AT that block, never current ownership: any later transfer of the same token deletes the saved result (and the dashboard marks a result stale if rows exist after its block). Saved results are keyed by wallet, chain, contract and token id, so they never apply to another one. Provider and RPC error text is treated as untrusted: control characters are stripped and length is capped.
+
+**Layout.** `provider.py` (data source interface; Etherscan keyless adapter), `events.py` (row mapping and identity),
+`monitor.py` (collect / persist / evaluate), `history.py` (bounded sync), `chainrpc.py`, `config.py`.
