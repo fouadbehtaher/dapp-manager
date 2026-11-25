@@ -18,19 +18,20 @@ main{padding:10px;max-width:900px;margin:auto}.card{background:#161d2e;border-ra
 .tag{border-radius:6px;padding:2px 7px;font-size:11px;margin-inline-end:4px;display:inline-block;white-space:nowrap}
 .info{background:#1e3a5f}.warn{background:#7a5a00}.critical{background:#8f2323}.ok{background:#14532d;color:#d7f5df}.err{background:#8f2323}
 .tx{border-top:1px solid #26304a;padding:7px 0;display:grid;grid-template-columns:1fr auto;gap:2px 8px;font-size:12px}
-.val{direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-weight:600;text-align:left}
+.val{direction:ltr;unicode-bidi:isolate;font-weight:600;text-align:left;overflow-wrap:anywhere;min-width:0}
 h2{font-size:14px;margin:8px 0 2px}.al{padding:5px 0;border-top:1px solid #26304a;font-size:12.5px;line-height:1.6}
-.ltr{direction:ltr;unicode-bidi:isolate;display:inline-block}
+.ltr{direction:ltr;unicode-bidi:isolate;display:inline-block;max-width:100%;overflow-wrap:anywhere;word-break:break-all}.tx>*{min-width:0;overflow-wrap:anywhere}.nft{max-height:none}
 </style></head><body><header><h1>مدير التطبيقات اللامركزية</h1><span class="tag ok">قراءة فقط</span><button id="b">فحص الآن</button></header>
 <main><div id="alerts"></div><div id="gas"></div><div id="targets"></div>
 <div class="card muted"><b>دليل الرموز:</b> <span class="tag ok">✓ يعمل</span> الفئة اتقرأت بنجاح · <span class="tag err">✗ خطأ</span> فشل القراءة (مش صفر، مجهول) ·
-الفئات: الرصيد / الإنشاء / الكود المصدري / المعاملات / تحويلات التوكن.<br>
+الفئات: الرصيد / الإنشاء / الكود المصدري / المعاملات / المعاملات الداخلية / توكن ERC-20 / NFT 721 / NFT 1155. فحص الأطراف المقابلة مقابل قائمة OFAC يعمل فقط بعد تحميلها (sanctions-update) ويظهر تاريخ القائمة المستخدم.<br>
 <b>الوحدات:</b> "ETH/POL" = العملة الأصلية للشبكة بعد القسمة على 10^18، وليست دولارًا. قيم التوكن = المبلغ الخام ÷ 10^(decimals التوكن) بدون أي سعر. اسم التوكن يكتبه صاحبه وقد يكون مضللًا.<br>
-<b>التغطية:</b> أول فحص = آخر ٥٠ سجلًا لكل فئة. الفحوص التالية ترجع صفحات حتى آخر سجل معروف (حد أقصى ٢٥٠). لو تجاوز الحد يظهر تنبيه "فجوة تغطية". ليست سجلًا كاملًا، وليست تدقيقًا أمنيًا.<br><b>أولوية المراجعة:</b> تطابق اسم دالة مع selector المعاملة (فحص اتساق، ليس تحقق ABI، وتصادم selectors ممكن)، لمعاملات مباشرة إلى العقد فقط؛ ليس إثبات هجوم ولا تغيّر حالة. لا تُرى الاستدعاءات عبر multisig/router.</div></main>
+<b>التغطية:</b> أول فحص = آخر ٥٠ سجلًا لكل فئة. الفحوص التالية ترجع صفحات حتى آخر سجل معروف (حد أقصى ٢٥٠). لو تجاوز الحد يظهر تنبيه "فجوة تغطية". ليست سجلًا كاملًا، وليست تدقيقًا أمنيًا.<br><b>أولوية المراجعة:</b> تطابق اسم دالة مع selector المعاملة (فحص اتساق، ليس تحقق ABI، وتصادم selectors ممكن)، لمعاملات مباشرة إلى العقد فقط؛ ليس إثبات هجوم ولا تغيّر حالة. المعاملات الداخلية تُجمع وتُعرض كسجل تاريخي فقط؛ تحليل أسماء الدوال للاستدعاءات الداخلية/عبر multisig أو router غير مدعوم، فلا تنبيه sensitive_call لها. <b>مخزون NFT:</b> مرشح مشتق من التحويلات، ليس ملكية حالية مؤكدة. <b>OFAC:</b> حقيقة عن القائمة بتاريخها وليست حكمًا قانونيًا، وقائمة قديمة تعني «مجهول».</div></main></main>
 <script nonce="__N__">
 const E=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const D=t=>t?new Date(t*1000).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
-const CAT={balance:'الرصيد',creation:'الإنشاء',source:'الكود',transactions:'المعاملات',token_transfers:'تحويلات التوكن'};
+const CAT={balance:'الرصيد',creation:'الإنشاء',source:'الكود',transactions:'المعاملات',internal_transactions:'المعاملات الداخلية',token_transfers:'توكن ERC-20',nft_721:'NFT 721',nft_1155:'NFT 1155'};
+const KIND={normal:'عادية',internal:'داخلية',erc20:'توكن',erc721:'NFT',erc1155:'NFT'};
 const LV={info:'معلومة',warn:'تحذير',critical:'حرج'};
 const S=a=>E(a.slice(0,8))+'…'+E(a.slice(-4));
 async function load(){const r=await fetch('/api/state');const s=await r.json();
@@ -47,11 +48,18 @@ return `<div class="card"><div class="row"><b>${t.dapp?'<span class="tag info">d
 ${t.kind==='contract'?`<div class="muted">الاسم: <span class="ltr">${E(n.name||'—')}</span> · الكود: ${n.verified===undefined?'—':n.verified?'<span class="tag ok">موثّق</span>':'<span class="tag err">غير موثّق</span>'}${n.proxy?' · وكيل → <span class="mono">'+E(n.implementation)+'</span>':''}</div>`:''}
 ${n.kind==='contract'||t.kind==='contract'?`<div class="muted">نشاط النافذة المحفوظة فقط: ${t.profile.calls} استدعاء · فشل ${t.profile.failed} · ${t.profile.unique_callers} مستدعي مختلف${t.profile.top_methods.length?'<br>أكثر الدوال: <span class="ltr">'+t.profile.top_methods.slice(0,3).map(m=>E(m[0])+' ×'+m[1]).join(' · ')+'</span>':''}${t.profile.unnamed_methods?'<br>'+t.profile.unnamed_methods+' استدعاء بدون اسم دالة (ABI غير موثّق) ولم يُفحص للدوال الحساسة':''}</div>`+t.profile.sensitive.map(x=>`<div class="al"><span class="tag ${E(x.level)}">${E(LV[x.level])}</span>أولوية مراجعة (تطابق اسم الدالة فقط، ليس إثبات هجوم): <span class="ltr">${E(x.method)}() — ${E(x.why)}</span> ${x.failed?'(فشلت/ارتدّت، لا تغيّر حالة متوقع)':''}<div class="muted">${D(x.ts)} · <span class="mono">${S(x.caller)}</span></div></div>`).join(''):''}
 <div>${Object.entries(st).map(([k,v])=>`<span class="tag ${v==='ok'?'ok':'err'}" title="${E(v)}">${v==='ok'?'✓':'✗'} ${E(CAT[k]||k)}</span>`).join('')}${gap}</div>
-<h2>آخر المعاملات</h2>`+t.recent.map(x=>`<div class="tx"><span>${D(x.ts)} · ${E(x.kind==='erc20'?'توكن':'عادية')}${x.failed?' <span class="tag err">فشلت</span>':''}</span><span class="val">${E(x.display)}</span><span class="mono">${S(x.frm)} → ${S(x.to_||'')}</span><span></span></div>`).join('')+`</div>`}).join('')||'<div class="card muted">لا أهداف. أضف عنوانًا بالأمر dappman add.</div>';}
+${t.sanctions_note?'<div class="muted">'+E(t.sanctions_note)+'</div>':''}${t.sanctions_date?'<div class="muted">فحص الأطراف المقابلة مقابل قائمة OFAC بتاريخ '+E(t.sanctions_date)+'</div>':''}
+${t.nft?`<h2>مخزون NFT مشتق (غير مؤكد)</h2><div class="muted">${t.nft.total} عنصرًا مرشحًا من ${t.nft.rows} تحويلًا محفوظًا — التحويلات وحدها لا تثبت الملكية الحالية (عقود غير قياسية، فجوات الفهرسة، إعادة تنظيم السلسلة). التأكيد يحتاج قراءة ownerOf/balanceOf على السلسلة أو مزوّد ملكية موثّق.</div>`+t.nft.items.slice(0,10).map(i=>{const id=String(i.token_id);const sid=id.length>14?id.slice(0,6)+'…'+id.slice(-6):id;return `<div class="tx"><span class="ltr" title="${E(id)}">${E(i.symbol||'NFT')} #${E(sid)} ×${E(i.qty)}</span><span class="mono">${S(i.contract)}</span></div>`}).join('')+(t.nft.total>10?`<div class="muted">+${t.nft.total-10} عنصرًا آخر غير معروض (الأول 10 فقط). التصدير الكامل: dappman nfts --json</div>`:'')+(t.nft.inconsistent?`<div class="muted">${t.nft.inconsistent} توكن خارج أكثر من داخل: السجل ناقص لها.</div>`:''):''}
+<h2>آخر المعاملات</h2>`+t.recent.map(x=>`<div class="tx"><span>${D(x.ts)} · ${E(KIND[x.kind]||x.kind)}${x.failed?' <span class="tag err">فشلت</span>':''}</span><span class="val">${E(x.display)}</span><span class="mono">${S(x.frm)} → ${S(x.to_||'')}</span><span></span></div>`).join('')+`</div>`}).join('')||'<div class="card muted">لا أهداف. أضف عنوانًا بالأمر dappman add.</div>';}
 async function scanNow(){const b=document.getElementById('b');b.disabled=true;b.textContent='جارٍ الفحص…';
 try{await fetch('/api/scan',{method:'POST',headers:{'X-Dappman':'1'}});}finally{b.disabled=false;b.textContent='فحص الآن';load();}}
 document.getElementById('b').addEventListener('click',scanNow);load();setInterval(load,30000);
 </script></body></html>"""
+
+
+def _short_id(v, n=6):
+    v = str(v)
+    return v if len(v) <= 2 * n + 2 else v[:n] + '…' + v[-n:]
 
 
 def state(store):
@@ -64,11 +72,24 @@ def state(store):
             if r['kind'] == 'erc20':
                 dec = int((r['token'].split('|') + ['18'])[1] or 18)
                 disp = f"{fmt(eth(r['value'], dec))} {(r['token'].split('|')[0] or 'token')}"
+            elif r['kind'] == 'erc721':
+                disp = f"{(r['token'] or 'NFT')} #{_short_id(r['token_id'])}"
+            elif r['kind'] == 'erc1155':
+                disp = f"x{r['value']} {(r['token'] or 'NFT')} #{_short_id(r['token_id'])}"
+            elif r['kind'] == 'internal':
+                disp = f"{fmt(eth(r['value']))} {sym} (داخلية)"
             else:
                 disp = f"{fmt(eth(r['value']))} {sym}"
             rec.append({**r, 'display': disp})
+        nft = None
+        if t['kind'] == 'wallet':
+            from .nfts import derive
+            d = derive(store, t['id'], t['address'])
+            if d['derived_from_rows']:
+                nft = {'items': d['items'][:10], 'total': len(d['items']), 'rows': d['derived_from_rows'], 'inconsistent': d.get('inconsistent_tokens', 0)}
         out.append({**t, 'chain_name': name, 'sym': sym, 'snapshot': snap, 'scanned_at': ts,
-                    'tx_count': store.tx_count(t['id']), 'profile': profile(store.window(t['id']), t['address'], verified=bool((snap or {}).get('verified'))) if t['kind'] == 'contract' else None, 'balance_fmt': fmt(snap['native_balance']) if snap and snap.get('native_balance') else '', 'recent': rec})
+                    'tx_count': store.tx_count(t['id']), 'profile': profile(store.window(t['id']), t['address'], verified=bool((snap or {}).get('verified'))) if t['kind'] == 'contract' else None, 'balance_fmt': fmt(snap['native_balance']) if snap and snap.get('native_balance') else '', 'recent': rec,
+                    'nft': nft, 'sanctions_note': (snap or {}).get('sanctions_note'), 'sanctions_date': (snap or {}).get('sanctions_list_date')})
     gas = []
     for ch in sorted({t['chain'] for t in store.targets()}):
         rows = store.gas_rows(ch)
