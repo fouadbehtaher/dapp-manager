@@ -5,26 +5,49 @@ Python 3.10+ فقط، بدون مكتبات خارجية، بدون مفتاح A
 العميل يرفض برمجيًا أي أداة غير قراءة.
 
 ## التشغيل (من جذر المستودع، Python 3.10+)
+الكلمات الكبيرة (مثل CONTRACT_ADDRESS وTX_HASH) خانات تستبدلها بقيمك، وليست أوامر حرفية.
 ```bash
-git clone https://github.com/fouadbehtaher/dapp-manager && cd dapp-manager
-python3 -m dappman add 0xdAC17F958D2ee523a2206206994597C13D831ec7 --label USDT --kind contract
-python3 -m dappman add 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 --kind wallet --label sample
-python3 -m dappman scan          # الأول = خط أساس، الثاني فصاعدًا = تنبيهات
+git clone https://github.com/fouadbehtaher/dapp-manager
+cd dapp-manager
+
+python3 -m dappman add CONTRACT_ADDRESS --label NAME
+python3 -m dappman add CONTRACT_ADDRESS --label NAME --dapp APP
+python3 -m dappman add WALLET_ADDRESS --kind wallet
+python3 -m dappman scan
 python3 -m dappman watch --every 300
-python3 -m dappman alerts
+python3 -m dappman alerts --json
+python3 -m dappman tx-status TX_HASH --chain 1 --json
+python3 -m dappman track TX_HASH --label NAME
+python3 -m dappman gas --chain 1 --json
+python3 -m dappman gas-alert --chain 1 --below 0.1 --above 5
+python3 -m dappman profile --dapp APP
 python3 -m dappman export --out out
-python3 -m dappman serve --port 8787   # http://127.0.0.1:8787
+python3 -m dappman serve --port 8787
 python3 -m unittest discover -s tests -v
 ```
+
+- `scan`: الأول خط أساس، الثاني فصاعدًا تنبيهات. `--dapp` يجمع عدة عقود تحت اسم تطبيق. الواجهة على http://127.0.0.1:8787
+- `tx-status` رمز الخروج: 0 نجحت، 3 فشلت، 4 معلّقة، 5 غير موجودة، 6 غير متاحة. الشبكات: `--chain 1` (Ethereum) أو 137 أو 42161.
+- `--json` يطبع JSON فقط على stdout؛ الأخطاء على stderr.
 الشبكات: 1 (Ethereum) و137 (Polygon) و42161 (Arbitrum) عبر `--chain`.
 
+## أتمتة سير العمل (قراءة وتنبيه فقط)
+- **حالة المعاملة:** `tx-status` يفرّق بين خمس حالات: نجحت (receipt status 1)، فشلت (0 مع سبب Etherscan إن وُجد)، معلّقة (Etherscan يعرفها بلا بلوك)، غير موجودة (لا سجل لها عند Etherscan على هذه الشبكة: لم تُبثّ أو أُسقطت أو شبكة خاطئة أو لم تُفهرس بعد، ولا يمكن التمييز بينها)، وغير متاحة (خطأ API/شبكة أو إجابة متناقضة: الحالة مجهولة وليست نجاحًا). ملاحظة مهمة: نقطة get_transaction_status وحدها تُرجع isError=0 لهاش غير موجود، لذلك لا تُستخدم منفردة. رمز الخروج يسهّل الربط بسكربتات أخرى، و`--json` للقراءة الآلية.
+- **التتبّع:** `track` يضيف المعاملة للمراقبة؛ كل `scan`/`watch` يُنبّه عند تغيّر الحالة، وعند بقائها معلّقة 30 دقيقة من أول فحص لنا (لا نعرف قبل ذلك).
+- **الغاز:** `gas` و`scan` يسجّلان عينة من Etherscan gas oracle بوحدة gwei، و`gas-alert` ينبّه عند عبور عتبة أدنى/أعلى (مرة عند العبور وليس في كل فحص). القيم إرشادية وتغطي عيناتك المحفوظة فقط، وليست توقعًا لأفضل وقت. غير متاح الغاز يظهر كخطأ ولا يتحول لصفر.
+- لا يغيّر الأداة أي رسوم، ولا يرسل أو يسرّع أو يلغي معاملات، ولا يراسل عملاء أو أنظمة خارجية. الشبكات المجانية: 1 و137 و42161.
+
 ## التنبيهات
+**جديد v0.4:** تنبيه `sensitive_call` بمستوى «أولوية مراجعة» (وليس نتيجة أمنية): يُطلق فقط عند معاملة خارجية مباشرة **إلى** العقد المراقَب، على عقد منشور كوده المصدري في Etherscan (وجود SourceCode فقط؛ لا يُجلب الـABI ولا يُتحقق منه)، واسم الدالة (نقل الملكية، ترقية proxy، admin، أدوار، pause، mint، blacklist، سحب طارئ) يُقبل فقط إذا طابق keccak256 للتوقيع أول 4 بايت من input المعاملة الفعلي. هذا فحص اتساق بين اسم وselector وليس تحققًا من ABI، وليس دليلًا أن الاسم هو الدالة الوحيدة بهذا الـselector (تصادم selectors ممكن نظريًا). المحاولة المرتدّة (reverted) تظهر كمعلومة فقط بلا تغيير حالة متوقع. التنبيه تطابق اسم/selector وليس إثبات هجوم أو تغيّر حالة: راجع المعاملة. لا يرى الاستدعاءات الداخلية أو عبر عقد وسيط (multisig/router) ولا المعاملات الصادرة من العقد.
+
 معاملة جديدة، معاملة فاشلة، قيمة كبيرة (`--big`)، تحويلات ERC-20 جديدة، تغيّر حالة التوثيق، تغيّر hash الكود المصدري (critical)، تغيّر implementation للـproxy (critical)، فشل فئة بيانات كانت تعمل.
 
 ## الحدود (صريحة)
-- آخر 50 سجلًا لكل فئة في كل فحص، وليس السجل الكامل. تشغيل `watch` يراكم السجل من لحظة البدء فقط.
+- أول فحص لكل عنوان (خط الأساس): آخر 50 سجلًا لكل فئة فقط. الفحوص التالية تتقدم حتى 250 سجلًا جديدًا لكل فئة؛ إن تجاوز النشاط ذلك قد تحدث فجوة فيُنبَّه عنها (ليست تغطية كاملة). السجل يتراكم من لحظة البدء فقط.
+- حالة المعاملة والغاز: لا توقع لأفضل وقت ولا تشخيص كامل للمعاملات المعلّقة؛ الحالة كما يعرضها Etherscan فقط.
 - نقطة Etherscan العامة بدون مفتاح، حدّ معدلها غير موثّق وقد يتغير. الأخطاء تظهر كأخطاء ولا تتحول لأصفار.
 - لا أرصدة NFT/ERC-20 الحالية (تحتاج نقطة PRO). القيم المعروضة تحويلات وليست ملكية.
+- ملف قاعدة البيانات `dappman.db` يحوي قائمة مراقبتك: لا ترفعه (مضاف إلى .gitignore).
 - ليست تدقيقًا أمنيًا: تنبيه تغيّر الكود/الـproxy مؤشر مراقبة فقط.
 - لا إشعارات خارجية (Telegram/Email) بعد. اللوحة محلية على 127.0.0.1 ولا تُنشر.
 - المسح الفعلي لا يتحقق من ملكية أي عقد عام؛ العناوين التجريبية عامة ولا علاقة لأصحابها.
