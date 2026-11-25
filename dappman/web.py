@@ -2,7 +2,7 @@
 import json, threading, time
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from .monitor import scan, eth, fmt, CHAINS
+from .monitor import scan, scan_all, eth, fmt, profile, CHAINS
 import secrets
 
 PAGE = r"""<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
@@ -22,11 +22,11 @@ main{padding:10px;max-width:900px;margin:auto}.card{background:#161d2e;border-ra
 h2{font-size:14px;margin:8px 0 2px}.al{padding:5px 0;border-top:1px solid #26304a;font-size:12.5px;line-height:1.6}
 .ltr{direction:ltr;unicode-bidi:isolate;display:inline-block}
 </style></head><body><header><h1>مدير التطبيقات اللامركزية</h1><span class="tag ok">قراءة فقط</span><button id="b">فحص الآن</button></header>
-<main><div id="alerts"></div><div id="targets"></div>
+<main><div id="alerts"></div><div id="gas"></div><div id="targets"></div>
 <div class="card muted"><b>دليل الرموز:</b> <span class="tag ok">✓ يعمل</span> الفئة اتقرأت بنجاح · <span class="tag err">✗ خطأ</span> فشل القراءة (مش صفر، مجهول) ·
 الفئات: الرصيد / الإنشاء / الكود المصدري / المعاملات / تحويلات التوكن.<br>
 <b>الوحدات:</b> "ETH/POL" = العملة الأصلية للشبكة بعد القسمة على 10^18، وليست دولارًا. قيم التوكن = المبلغ الخام ÷ 10^(decimals التوكن) بدون أي سعر. اسم التوكن يكتبه صاحبه وقد يكون مضللًا.<br>
-<b>التغطية:</b> أول فحص = آخر ٥٠ سجلًا لكل فئة. الفحوص التالية ترجع صفحات حتى آخر سجل معروف (حد أقصى ٢٥٠). لو تجاوز الحد يظهر تنبيه "فجوة تغطية". ليست سجلًا كاملًا، وليست تدقيقًا أمنيًا.</div></main>
+<b>التغطية:</b> أول فحص = آخر ٥٠ سجلًا لكل فئة. الفحوص التالية ترجع صفحات حتى آخر سجل معروف (حد أقصى ٢٥٠). لو تجاوز الحد يظهر تنبيه "فجوة تغطية". ليست سجلًا كاملًا، وليست تدقيقًا أمنيًا.<br><b>أولوية المراجعة:</b> تطابق اسم دالة مع selector المعاملة (فحص اتساق، ليس تحقق ABI، وتصادم selectors ممكن)، لمعاملات مباشرة إلى العقد فقط؛ ليس إثبات هجوم ولا تغيّر حالة. لا تُرى الاستدعاءات عبر multisig/router.</div></main>
 <script nonce="__N__">
 const E=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const D=t=>t?new Date(t*1000).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
@@ -36,12 +36,16 @@ const S=a=>E(a.slice(0,8))+'…'+E(a.slice(-4));
 async function load(){const r=await fetch('/api/state');const s=await r.json();
 document.getElementById('alerts').innerHTML='<div class="card"><h2>التنبيهات</h2>'+(s.alerts.length?s.alerts.map(a=>
 `<div class="al"><span class="tag ${E(a.level)}">${E(LV[a.level]||a.level)}</span><b>${E(a.label||a.address.slice(0,10))}</b>: <span class="ltr">${E(a.msg)}</span><div class="muted">${D(a.ts)}</div></div>`).join(''):'<span class="muted">لا تنبيهات. تبدأ من الفحص الثاني بعد تسجيل خط الأساس.</span>')+'</div>';
+const TXL={success:'نجحت',failed:'فشلت (ارتدّت)',pending:'معلّقة',not_found:'غير موجودة عند Etherscan',unavailable:'الحالة غير متاحة'};
+document.getElementById('gas').innerHTML=s.gas.length?'<div class="card"><h2>سعر الغاز (gwei، من Etherscan، إرشادي)</h2>'+s.gas.map(g=>`<div class="al"><b>${E(g.chain_name)}</b>: <span class="ltr">آمن ${E(g.latest.safe.toPrecision(3))} · عادي ${E(g.latest.propose.toPrecision(3))} · سريع ${E(g.latest.fast.toPrecision(3))} gwei</span><div class="muted">${g.n} عينة محفوظة فقط منذ بدء المراقبة (أدنى ${E(g.min.toPrecision(3))} · أعلى ${E(g.max.toPrecision(3))}) · آخر عينة ${D(g.latest.ts)}${g.below!==null||g.above!==null?' · عتبات التنبيه: '+E(g.below??'—')+' / '+E(g.above??'—')+' gwei':''}</div></div>`).join('')+'</div>':'';
 document.getElementById('targets').innerHTML=s.targets.map(t=>{const n=t.snapshot||{};const st=n.status||{};
+if(t.kind==='tx'){const c=n.status_cat;return `<div class="card"><div class="row"><b>${E(t.label||'معاملة')}</b><span><span class="tag info">معاملة</span><span class="tag info">${E(t.chain_name)}</span></span></div><div class="mono">${E(t.address)}</div><div><span class="tag ${c==='success'?'ok':c==='failed'||c==='unavailable'?'err':'warn'}">${E(TXL[c]||'—')}</span></div><div class="muted">${E(n.detail||'')}${n.block?' · بلوك '+E(n.block):''}<br>آخر فحص: ${D(t.scanned_at)} · لا يُغيَّر شيء تلقائيًا، قراءة فقط.</div></div>`}
 const gap=(n.gaps||[]).length?`<div class="tag warn">فجوة تغطية محتملة: ${E(n.gaps.join(', '))}</div>`:'';
-return `<div class="card"><div class="row"><b>${E(t.label||t.address.slice(0,10))}</b><span><span class="tag info">${E(t.kind==='contract'?'عقد':'محفظة')}</span><span class="tag info">${E(t.chain_name)}</span></span></div>
+return `<div class="card"><div class="row"><b>${t.dapp?'<span class="tag info">dApp: '+E(t.dapp)+'</span>':''}${E(t.label||t.address.slice(0,10))}</b><span><span class="tag info">${E(t.kind==='contract'?'عقد':'محفظة')}</span><span class="tag info">${E(t.chain_name)}</span></span></div>
 <div class="mono">${E(t.address)}</div>
 <div class="muted">آخر فحص: ${D(t.scanned_at)} · الرصيد: <span class="ltr">${n.native_balance?E(t.balance_fmt)+' '+E(t.sym):'—'}</span> · سجلات محفوظة: ${t.tx_count}</div>
 ${t.kind==='contract'?`<div class="muted">الاسم: <span class="ltr">${E(n.name||'—')}</span> · الكود: ${n.verified===undefined?'—':n.verified?'<span class="tag ok">موثّق</span>':'<span class="tag err">غير موثّق</span>'}${n.proxy?' · وكيل → <span class="mono">'+E(n.implementation)+'</span>':''}</div>`:''}
+${n.kind==='contract'||t.kind==='contract'?`<div class="muted">نشاط النافذة المحفوظة فقط: ${t.profile.calls} استدعاء · فشل ${t.profile.failed} · ${t.profile.unique_callers} مستدعي مختلف${t.profile.top_methods.length?'<br>أكثر الدوال: <span class="ltr">'+t.profile.top_methods.slice(0,3).map(m=>E(m[0])+' ×'+m[1]).join(' · ')+'</span>':''}${t.profile.unnamed_methods?'<br>'+t.profile.unnamed_methods+' استدعاء بدون اسم دالة (ABI غير موثّق) ولم يُفحص للدوال الحساسة':''}</div>`+t.profile.sensitive.map(x=>`<div class="al"><span class="tag ${E(x.level)}">${E(LV[x.level])}</span>أولوية مراجعة (تطابق اسم الدالة فقط، ليس إثبات هجوم): <span class="ltr">${E(x.method)}() — ${E(x.why)}</span> ${x.failed?'(فشلت/ارتدّت، لا تغيّر حالة متوقع)':''}<div class="muted">${D(x.ts)} · <span class="mono">${S(x.caller)}</span></div></div>`).join(''):''}
 <div>${Object.entries(st).map(([k,v])=>`<span class="tag ${v==='ok'?'ok':'err'}" title="${E(v)}">${v==='ok'?'✓':'✗'} ${E(CAT[k]||k)}</span>`).join('')}${gap}</div>
 <h2>آخر المعاملات</h2>`+t.recent.map(x=>`<div class="tx"><span>${D(x.ts)} · ${E(x.kind==='erc20'?'توكن':'عادية')}${x.failed?' <span class="tag err">فشلت</span>':''}</span><span class="val">${E(x.display)}</span><span class="mono">${S(x.frm)} → ${S(x.to_||'')}</span><span></span></div>`).join('')+`</div>`}).join('')||'<div class="card muted">لا أهداف. أضف عنوانًا بالأمر dappman add.</div>';}
 async function scanNow(){const b=document.getElementById('b');b.disabled=true;b.textContent='جارٍ الفحص…';
@@ -64,8 +68,15 @@ def state(store):
                 disp = f"{fmt(eth(r['value']))} {sym}"
             rec.append({**r, 'display': disp})
         out.append({**t, 'chain_name': name, 'sym': sym, 'snapshot': snap, 'scanned_at': ts,
-                    'tx_count': store.tx_count(t['id']), 'balance_fmt': fmt(snap['native_balance']) if snap and snap.get('native_balance') else '', 'recent': rec})
-    return {'targets': out, 'alerts': store.alerts(50)}
+                    'tx_count': store.tx_count(t['id']), 'profile': profile(store.window(t['id']), t['address'], verified=bool((snap or {}).get('verified'))) if t['kind'] == 'contract' else None, 'balance_fmt': fmt(snap['native_balance']) if snap and snap.get('native_balance') else '', 'recent': rec})
+    gas = []
+    for ch in sorted({t['chain'] for t in store.targets()}):
+        rows = store.gas_rows(ch)
+        if rows:
+            gas.append({'chain': ch, 'chain_name': CHAINS.get(ch, ('Chain ' + ch, ''))[0], 'latest': rows[0], 'n': len(rows),
+                        'min': min(r['propose'] for r in rows), 'max': max(r['propose'] for r in rows),
+                        'below': store.get_setting('gas_below_' + ch), 'above': store.get_setting('gas_above_' + ch)})
+    return {'targets': out, 'alerts': store.alerts(50), 'gas': gas}
 
 
 def serve(store_factory, client_factory, host='127.0.0.1', port=8787):
@@ -117,7 +128,7 @@ def serve(store_factory, client_factory, host='127.0.0.1', port=8787):
                 return self._send(409, '{"error":"scan already running"}', 'application/json')
             try:
                 st, cl = store_factory(), client_factory()
-                res = [scan(cl, st, t)['new_alerts'] for t in st.targets()]
+                res = scan_all(cl, st)
                 self._send(200, json.dumps({'scanned': len(res)}), 'application/json')
             finally:
                 lock.release()
