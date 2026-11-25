@@ -4,7 +4,9 @@ import json, time, urllib.request, uuid
 MCP_URL = 'https://mcp-keyless.etherscan.io/mcp'
 READ_TOOLS = {'get_native_balance', 'get_transactions', 'get_internal_transactions',
               'get_token_transfers', 'get_contract_source', 'get_contract_creation',
-              'get_transaction_status', 'get_supported_chains'}
+              'get_transaction_status', 'get_supported_chains', 'get_transaction_receipt_status',
+              'get_transaction_by_hash', 'get_gas_oracle'}
+PROXY_TOOLS = {'get_transaction_by_hash'}  # payload is {ok, result} with no status field; result None = unknown hash
 
 
 class ApiError(Exception):
@@ -51,6 +53,8 @@ class McpClient:
             except Exception as e:
                 last = str(e)[:150]; self.sid = None; time.sleep(1 + i); continue
             time.sleep(self.sleep)
+            if tool in PROXY_TOOLS and p.get('ok') is True and 'result' in p:
+                return p.get('result')
             if p.get('ok') and p.get('status') == '1':
                 return p.get('result')
             res = p.get('result')
