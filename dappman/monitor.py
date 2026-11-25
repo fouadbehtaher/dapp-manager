@@ -1,5 +1,6 @@
 """Scan one target and raise alerts against the previous snapshot. Read-only."""
 import hashlib, re
+from .abi import selector_matches
 from decimal import Decimal
 from .client import ApiError
 
@@ -20,6 +21,48 @@ def eth(wei, dec=18):
     except Exception: return Decimal(0)
 
 
+SENSITIVE = {  # function-name fragments (lowercase) -> (level, meaning). Name match only: needs a verified ABI on Etherscan.
+    'transferownership': ('critical', 'ownership transfer'), 'renounceownership': ('critical', 'ownership renounced'),
+    'upgradeto': ('critical', 'proxy upgrade'), 'changeadmin': ('critical', 'proxy admin change'),
+    'setimplementation': ('critical', 'implementation change'), 'grantrole': ('warn', 'role granted'),
+    'revokerole': ('warn', 'role revoked'), 'pause': ('warn', 'pause/unpause'), 'blacklist': ('warn', 'blacklist change'),
+    'mint': ('warn', 'mint'), 'emergencywithdraw': ('warn', 'emergency withdraw'), 'setowner': ('critical', 'owner set'),
+    'setadmin': ('critical', 'admin set'), 'selfdestruct': ('critical', 'self-destruct'),
+}
+
+
+def sensitive(method):
+    m = (method or '').lower()
+    if m.startswith('0x'):  # methodId only: ABI not verified, cannot name it
+        return None
+    for frag, (lvl, why) in SENSITIVE.items():
+        if frag in m:
+            return lvl, why
+    return None
+
+
+def profile(rows, addr, top=5, verified=False):
+    """Activity profile over the stored window. Not full history."""
+    calls = [r for r in rows if r['to'] == addr]
+    methods = {}
+    for r in calls:
+        methods[r['method'] or '(transfer/unknown)'] = methods.get(r['method'] or '(transfer/unknown)', 0) + 1
+    callers = {}
+    for r in calls:
+        callers[r['frm']] = callers.get(r['frm'], 0) + 1
+    sens = []
+    for r in calls:
+        s = sensitive(r['method']) if verified else None
+        if s: sens.append({'ts': r['ts'], 'hash': r['hash'], 'method': r['method'], 'caller': r['frm'],
+                           'level': 'info' if r['failed'] else 'warn', 'why': s[1], 'failed': r['failed']})
+    return {'calls': len(calls), 'failed': sum(r['failed'] for r in calls),
+            'unique_callers': len(callers),
+            'top_methods': sorted(methods.items(), key=lambda x: -x[1])[:top],
+            'top_callers': sorted(callers.items(), key=lambda x: -x[1])[:top],
+            'sensitive': sens[:20],
+            'unnamed_methods': sum(1 for r in calls if (r['method'] or '').startswith('0x')), 'abi_verified': verified}
+
+
 def fmt(d):
     d = Decimal(d)
     if d == 0: return '0'
@@ -28,15 +71,27 @@ def fmt(d):
     return q
 
 
+def _method(r):
+    """A function NAME is kept only if keccak(signature)[:4] equals the tx input's real selector; otherwise the raw
+    method id is kept, so an untrusted/mismatched label can never trigger a sensitive-call alert."""
+    fn, mid, inp = r.get('functionName') or '', r.get('methodId') or '', r.get('input') or ''
+    if fn and selector_matches(fn, inp):
+        return fn.split('(')[0]
+    return mid if mid and mid != '0x' else ''
+
+
 def _tx(r, kind):
     return {'hash': r.get('hash') or r.get('transactionHash', ''), 'block': int(r.get('blockNumber') or 0),
             'ts': int(r.get('timeStamp') or 0), 'frm': (r.get('from') or '').lower(), 'to': (r.get('to') or '').lower(),
             'value': str(r.get('value') or '0'), 'failed': 1 if r.get('isError') == '1' else 0,
-            'method': (r.get('functionName') or r.get('methodId') or '').split('(')[0], 'kind': kind,
+            'method': _method(r), 'kind': kind,
             'token': (r.get('tokenSymbol') or '')[:20] + ('|' + str(r.get('tokenDecimal') or '') if kind == 'erc20' else '')}
 
 
 def scan(client, store, target, big_native=Decimal(10)):
+    if target['kind'] == 'tx':
+        from .txstatus import tx_scan
+        return tx_scan(client, store, target)
     """Returns dict(snapshot, new_alerts, new_txs). Each category records its own status; errors never become zeros."""
     tid, chain, addr, kind = target['id'], target['chain'], target['address'], target['kind']
     sym = CHAINS.get(chain, ('', ''))[1]
@@ -104,6 +159,14 @@ def scan(client, store, target, big_native=Decimal(10)):
         fails = [r for r in newn if r['failed']]
         if fails:
             alerts.append(('warn', 'failed_tx', f'{len(fails)} new failed transactions'))
+        if kind == 'contract' and snap.get('verified') is True:
+            for r in newn:
+                sv = sensitive(r['method']) if r['to'] == addr else None  # direct external tx TO this contract only
+                if sv:
+                    if r['failed']:
+                        alerts.append(('info', 'sensitive_call', f"review: reverted call to {r['method']}() ({sv[1]}); reverted, no state change expected; by {r['frm'][:10]}... in {r['hash'][:12]}..."))
+                    else:
+                        alerts.append(('warn', 'sensitive_call', f"review priority: successful tx called {r['method']}() ({sv[1]}) by {r['frm'][:10]}... in {r['hash'][:12]}... Name/selector match only; not proof of an attack or of the resulting state, check the tx"))
         big = [r for r in newn if eth(r['value']) >= big_native]
         for r in big:
             alerts.append(('warn', 'large_value', f'native value {fmt(eth(r["value"]))} {sym} (native coin units, not USD) in {r["hash"][:12]}...'))
@@ -124,3 +187,11 @@ def scan(client, store, target, big_native=Decimal(10)):
     snap['baseline'] = first
     store.save_snapshot(tid, snap)
     return {'snapshot': snap, 'new_alerts': alerts, 'new_txs': len(fresh)}
+
+
+def scan_all(client, store, big=Decimal(10)):
+    """One full pass: every target, then one gas sample per chain in use. Returns list of (target, result)."""
+    from .txstatus import gas_scan
+    res = [(t, scan(client, store, t, big)) for t in store.targets()]
+    gas_scan(client, store, [t['chain'] for t in store.targets()])
+    return res
