@@ -10,13 +10,15 @@ PAGE = r"""<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <style nonce="__N__">
 *{box-sizing:border-box}body{font-family:system-ui,'Segoe UI',Tahoma,sans-serif;margin:0;background:#0f1420;color:#e8ecf4}
 header{padding:10px 12px;background:#161d2e;display:flex;gap:8px;align-items:center;position:sticky;top:0;z-index:2}
-h1{font-size:15px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+h1{font-size:15px;margin:0;flex:1;line-height:1.4;overflow-wrap:anywhere}
 button{background:#3b82f6;color:#fff;border:0;border-radius:8px;padding:8px 12px;font-size:13px;white-space:nowrap}button:disabled{opacity:.5}
 main{padding:10px;max-width:900px;margin:auto}.card{background:#161d2e;border-radius:12px;padding:12px;margin-bottom:10px}
 .row{display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;align-items:center}.muted{color:#93a0b8;font-size:12px;line-height:1.7}
 .mono{font-family:ui-monospace,Menlo,monospace;direction:ltr;unicode-bidi:isolate;word-break:break-all;font-size:11px;text-align:left}
 .tag{border-radius:6px;padding:2px 7px;font-size:11px;margin-inline-end:4px;display:inline-block;white-space:nowrap}
 .info{background:#1e3a5f}.warn{background:#7a5a00}.critical{background:#8f2323}.ok{background:#14532d;color:#d7f5df}.err{background:#8f2323}
+.note{background:#7a5a00;border-radius:8px;padding:6px 9px;margin:6px 0;font-size:12px;line-height:1.6;white-space:normal;overflow-wrap:anywhere}
+.cmd{direction:ltr;text-align:left;unicode-bidi:isolate;background:#0b101a;border:1px solid #26304a;border-radius:8px;padding:8px;margin:6px 0;font:11px ui-monospace,Menlo,monospace;overflow-wrap:anywhere;white-space:pre-wrap;user-select:all}.cp{font-size:11px;padding:4px 8px;background:#26304a}
 .tx{border-top:1px solid #26304a;padding:7px 0;display:grid;grid-template-columns:1fr auto;gap:2px 8px;font-size:12px}
 .val{direction:ltr;unicode-bidi:isolate;font-weight:600;text-align:left;overflow-wrap:anywhere;min-width:0}
 h2{font-size:14px;margin:8px 0 2px}.al{padding:5px 0;border-top:1px solid #26304a;font-size:12.5px;line-height:1.6}
@@ -45,15 +47,17 @@ const gap=(n.gaps||[]).length?`<div class="tag warn">فجوة تغطية محت�
 return `<div class="card"><div class="row"><b>${t.dapp?'<span class="tag info">dApp: '+E(t.dapp)+'</span>':''}${E(t.label||t.address.slice(0,10))}</b><span><span class="tag info">${E(t.kind==='contract'?'عقد':'محفظة')}</span><span class="tag info">${E(t.chain_name)}</span></span></div>
 <div class="mono">${E(t.address)}</div>
 <div class="muted">آخر فحص: ${D(t.scanned_at)} · الرصيد: <span class="ltr">${n.native_balance?E(t.balance_fmt)+' '+E(t.sym):'—'}</span> · سجلات محفوظة: ${t.tx_count}</div>
+${t.legacy_rows?`<div class="note">${E(t.legacy_rows)} سجلًا قديمًا من نسخة سابقة غير محسوب، لأن النسخة السابقة كانت قد تدمج أحداثًا مختلفة في سجل واحد. أعد جلب السجل بتشغيل الأمر التالي في الطرفية (من مجلد المشروع):</div><div class="cmd" id="c${E(t.id)}">python3 -m dappman sync ${E(t.address)} --chain ${E(t.chain)}</div><button class="cp" data-c="c${E(t.id)}">نسخ الأمر</button>`:''}${t.ambiguous_rows?`<div class="note">${E(t.ambiguous_rows)} سجلًا له توأم مطابق في نفس المعاملة، والمزوّد لا يعطي ترتيب الحدث: العدد غير مؤكد</div>`:''}
 ${t.kind==='contract'?`<div class="muted">الاسم: <span class="ltr">${E(n.name||'—')}</span> · الكود: ${n.verified===undefined?'—':n.verified?'<span class="tag ok">موثّق</span>':'<span class="tag err">غير موثّق</span>'}${n.proxy?' · وكيل → <span class="mono">'+E(n.implementation)+'</span>':''}</div>`:''}
 ${n.kind==='contract'||t.kind==='contract'?`<div class="muted">نشاط النافذة المحفوظة فقط: ${t.profile.calls} استدعاء · فشل ${t.profile.failed} · ${t.profile.unique_callers} مستدعي مختلف${t.profile.top_methods.length?'<br>أكثر الدوال: <span class="ltr">'+t.profile.top_methods.slice(0,3).map(m=>E(m[0])+' ×'+m[1]).join(' · ')+'</span>':''}${t.profile.unnamed_methods?'<br>'+t.profile.unnamed_methods+' استدعاء بدون اسم دالة (ABI غير موثّق) ولم يُفحص للدوال الحساسة':''}</div>`+t.profile.sensitive.map(x=>`<div class="al"><span class="tag ${E(x.level)}">${E(LV[x.level])}</span>أولوية مراجعة (تطابق اسم الدالة فقط، ليس إثبات هجوم): <span class="ltr">${E(x.method)}() — ${E(x.why)}</span> ${x.failed?'(فشلت/ارتدّت، لا تغيّر حالة متوقع)':''}<div class="muted">${D(x.ts)} · <span class="mono">${S(x.caller)}</span></div></div>`).join(''):''}
 <div>${Object.entries(st).map(([k,v])=>`<span class="tag ${v==='ok'?'ok':'err'}" title="${E(v)}">${v==='ok'?'✓':'✗'} ${E(CAT[k]||k)}</span>`).join('')}${gap}</div>
 ${t.sanctions_note?'<div class="muted">'+E(t.sanctions_note)+'</div>':''}${t.sanctions_date?'<div class="muted">فحص الأطراف المقابلة مقابل قائمة OFAC بتاريخ '+E(t.sanctions_date)+'</div>':''}
-${t.nft?`<h2>مخزون NFT مشتق (غير مؤكد)</h2><div class="muted">${t.nft.total} عنصرًا مرشحًا من ${t.nft.rows} تحويلًا محفوظًا — التحويلات وحدها لا تثبت الملكية الحالية (عقود غير قياسية، فجوات الفهرسة، إعادة تنظيم السلسلة). التأكيد يحتاج قراءة ownerOf/balanceOf على السلسلة أو مزوّد ملكية موثّق.</div>`+t.nft.items.slice(0,10).map(i=>{const id=String(i.token_id);const sid=id.length>14?id.slice(0,6)+'…'+id.slice(-6):id;return `<div class="tx"><span class="ltr" title="${E(id)}">${E(i.symbol||'NFT')} #${E(sid)} ×${E(i.qty)}</span><span class="mono">${S(i.contract)}</span></div>`}).join('')+(t.nft.total>10?`<div class="muted">+${t.nft.total-10} عنصرًا آخر غير معروض (الأول 10 فقط). التصدير الكامل: dappman nfts --json</div>`:'')+(t.nft.inconsistent?`<div class="muted">${t.nft.inconsistent} توكن خارج أكثر من داخل: السجل ناقص لها.</div>`:''):''}
+${t.nft?`<h2>مخزون NFT مشتق (غير مؤكد)</h2><div class="muted">${t.nft.total} عنصرًا مرشحًا من ${t.nft.rows} تحويلًا محفوظًا — التحويلات وحدها لا تثبت الملكية الحالية (عقود غير قياسية، فجوات الفهرسة، إعادة تنظيم السلسلة). التأكيد على السلسلة لا يتم تلقائيًا: شغّل الأمر أدناه، وتظهر هنا نتيجته (الكتلة والمصدر وقت الفحص).</div><div class="cmd">python3 -m dappman nfts ${E(t.address)} --chains ${E(t.chain)} --confirm</div>`+t.nft.items.slice(0,10).map(i=>{const id=String(i.token_id);const sid=id.length>14?id.slice(0,6)+'…'+id.slice(-6):id;const c=i.confirmation;const CS={confirmed_owner:['ok','مالك عند الكتلة'],not_owner:['err','ليس المالك عند الكتلة'],unknown:['warn','غير معروف عند الكتلة']};const cs=c?CS[c.state]||CS.unknown:null;const ct=c?`<div class="muted" style="grid-column:1/-1"><span class="tag ${cs[0]}">${cs[1]} ${E(c.block)}</span>${c.stale?'<span class="tag warn">قديم: حدثت تحويلات بعد هذه الكتلة</span>':''} لقطة وقت الفحص ${D(c.ts)} (سلسلة ${E(t.chain)} · <span class="ltr">${E(c.rpc)}</span>)، ليست ملكية حالية${c.reason?' · '+E(c.reason):''}</div>`:'<div class="muted" style="grid-column:1/-1"><span class="tag info">لم يُؤكَّد بعد</span></div>';return `<div class="tx"><span class="ltr" title="${E(id)}">${E(i.symbol||'NFT')} #${E(sid)} ×${E(i.qty)}</span><span class="mono">${S(i.contract)}</span>${ct}</div>`}).join('')+(t.nft.total>10?`<div class="muted">+${t.nft.total-10} عنصرًا آخر غير معروض (الأول 10 فقط). التصدير الكامل: dappman nfts --json</div>`:'')+(t.nft.inconsistent?`<div class="muted">${t.nft.inconsistent} توكن خارج أكثر من داخل: السجل ناقص لها.</div>`:''):''}
 <h2>آخر المعاملات</h2>`+t.recent.map(x=>`<div class="tx"><span>${D(x.ts)} · ${E(KIND[x.kind]||x.kind)}${x.failed?' <span class="tag err">فشلت</span>':''}</span><span class="val">${E(x.display)}</span><span class="mono">${S(x.frm)} → ${S(x.to_||'')}</span><span></span></div>`).join('')+`</div>`}).join('')||'<div class="card muted">لا أهداف. أضف عنوانًا بالأمر dappman add.</div>';}
 async function scanNow(){const b=document.getElementById('b');b.disabled=true;b.textContent='جارٍ الفحص…';
 try{await fetch('/api/scan',{method:'POST',headers:{'X-Dappman':'1'}});}finally{b.disabled=false;b.textContent='فحص الآن';load();}}
-document.getElementById('b').addEventListener('click',scanNow);load();setInterval(load,30000);
+document.getElementById('b').addEventListener('click',scanNow);
+document.addEventListener('click',e=>{const b=e.target.closest('.cp');if(b){const t=document.getElementById(b.dataset.c).textContent;navigator.clipboard&&navigator.clipboard.writeText(t).then(()=>{b.textContent='تم النسخ'})}});load();setInterval(load,30000);
 </script></body></html>"""
 
 
@@ -86,10 +90,19 @@ def state(store):
             from .nfts import derive
             d = derive(store, t['id'], t['address'])
             if d['derived_from_rows']:
-                nft = {'items': d['items'][:10], 'total': len(d['items']), 'rows': d['derived_from_rows'], 'inconsistent': d.get('inconsistent_tokens', 0)}
+                cf = store.confirmations(t['id'])
+                items = []
+                for i in d['items'][:10]:
+                    c = cf.get((i['contract'], i['token_id']))
+                    if c:
+                        mb = store.db.execute('SELECT MAX(block) FROM txs WHERE target_id=? AND contract=? AND token_id=?', (t['id'], i['contract'], i['token_id'])).fetchone()[0] or 0
+                        c = {**c, 'stale': mb > c['block']}
+                    items.append({**i, 'confirmation': c})
+                nft = {'items': items, 'total': len(d['items']), 'rows': d['derived_from_rows'], 'inconsistent': d.get('inconsistent_tokens', 0)}
         out.append({**t, 'chain_name': name, 'sym': sym, 'snapshot': snap, 'scanned_at': ts,
                     'tx_count': store.tx_count(t['id']), 'profile': profile(store.window(t['id']), t['address'], verified=bool((snap or {}).get('verified'))) if t['kind'] == 'contract' else None, 'balance_fmt': fmt(snap['native_balance']) if snap and snap.get('native_balance') else '', 'recent': rec,
-                    'nft': nft, 'sanctions_note': (snap or {}).get('sanctions_note'), 'sanctions_date': (snap or {}).get('sanctions_list_date')})
+                    'nft': nft, 'legacy_rows': store.legacy_rows(t['id']), 'ambiguous_rows': store.ambiguous_rows(t['id']),
+                    'sanctions_note': (snap or {}).get('sanctions_note'), 'sanctions_date': (snap or {}).get('sanctions_list_date')})
     gas = []
     for ch in sorted({t['chain'] for t in store.targets()}):
         rows = store.gas_rows(ch)
