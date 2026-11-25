@@ -5,3 +5,6 @@ out*/
 *.docx
 *.csv
 !examples/*.csv
+*.db
+*.db-journal
+export/
