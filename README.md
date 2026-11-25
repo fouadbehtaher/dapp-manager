@@ -1,37 +1,38 @@
-# مدير التطبيقات اللامركزية — dApp Manager (قراءة فقط)
+# dApp Manager — dappman (قراءة فقط)
 
-أدوات Python لمتابعة العقود والمحافظ على شبكات EVM عبر خدمة **Etherscan Keyless MCP** العامة —
-بدون مفتاح API وبدون حساب وبدون أي صلاحية كتابة.
+أداة واحدة متكاملة: قائمة مراقبة ← فحص دوري ← قاعدة SQLite ← تنبيهات ← لوحة ويب محلية ← تصدير CSV.
+Python 3.10+ فقط، بدون مكتبات خارجية، بدون مفتاح API، بدون حساب. Read-only: لا توقيع ولا تحريك أموال ولا نشر عقود.
+العميل يرفض برمجيًا أي أداة غير قراءة.
 
-## ماذا تفعل (مجربة فعليًا)
-
-| الأداة | الوظيفة |
-|---|---|
-| `src/ethscan_demo.py` | تقرير محفظة: رصيد أصلي + سجلات معاملات عادية/داخلية وتحويلات ERC-20/721/1155 عبر شبكات، كملفات CSV و`summary.json` |
-| `src/build_docx.py` | تقرير عربي PDF/DOCX بصفحة واحدة من مخرجات الأداة السابقة |
-| `src/dapp_monitor.py` | لوحة عقد ذكي: بيانات الإنشاء، حالة التحقق من الكود، آخر المعاملات وتحويلات الرموز |
-| `src/build_monitor_docx.py` | تقرير عربي PDF/DOCX بصفحة واحدة من مخرجات لوحة العقد |
-
-كل الأدوات **قراءة فقط**: لا توقيع، لا تحريك أموال، لا تغيير عقود، لا إنشاء مفاتيح API.
-
-## الاستخدام
-
+## التشغيل (من جذر المستودع، Python 3.10+)
 ```bash
-python3 src/ethscan_demo.py <عنوان_عام> [اسم_مستعار] [outdir]
-python3 src/build_docx.py <outdir>
-python3 src/dapp_monitor.py <chain_id> <عنوان_العقد> [outdir]
-python3 src/build_monitor_docx.py <outdir>
+git clone https://github.com/fouadbehtaher/dapp-manager && cd dapp-manager
+python3 -m dappman add 0xdAC17F958D2ee523a2206206994597C13D831ec7 --label USDT --kind contract
+python3 -m dappman add 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 --kind wallet --label sample
+python3 -m dappman scan          # الأول = خط أساس، الثاني فصاعدًا = تنبيهات
+python3 -m dappman watch --every 300
+python3 -m dappman alerts
+python3 -m dappman export --out out
+python3 -m dappman serve --port 8787   # http://127.0.0.1:8787
+python3 -m unittest discover -s tests -v
 ```
+الشبكات: 1 (Ethereum) و137 (Polygon) و42161 (Arbitrum) عبر `--chain`.
 
-يعتمد فقط على مكتبات Python القياسية، وعلى LibreOffice اختياريًا لتحويل DOCX إلى PDF.
+## التنبيهات
+معاملة جديدة، معاملة فاشلة، قيمة كبيرة (`--big`)، تحويلات ERC-20 جديدة، تغيّر حالة التوثيق، تغيّر hash الكود المصدري (critical)، تغيّر implementation للـproxy (critical)، فشل فئة بيانات كانت تعمل.
 
-## الحدود (مهم)
+## الحدود (صريحة)
+- آخر 50 سجلًا لكل فئة في كل فحص، وليس السجل الكامل. تشغيل `watch` يراكم السجل من لحظة البدء فقط.
+- نقطة Etherscan العامة بدون مفتاح، حدّ معدلها غير موثّق وقد يتغير. الأخطاء تظهر كأخطاء ولا تتحول لأصفار.
+- لا أرصدة NFT/ERC-20 الحالية (تحتاج نقطة PRO). القيم المعروضة تحويلات وليست ملكية.
+- ليست تدقيقًا أمنيًا: تنبيه تغيّر الكود/الـproxy مؤشر مراقبة فقط.
+- لا إشعارات خارجية (Telegram/Email) بعد. اللوحة محلية على 127.0.0.1 ولا تُنشر.
+- المسح الفعلي لا يتحقق من ملكية أي عقد عام؛ العناوين التجريبية عامة ولا علاقة لأصحابها.
 
-- البيانات عبر نقطة النهاية العامة المحدودة المعدل من Etherscan (حوالي ٢٠٠ طلب صريحًا في اختباراتنا، والحد قد يتغير) — وليست بديلًا عن خطة API مدفوعة.
-- الأرصدة الحالية لرموز ERC-20/NFT غير متاحة بدون مفتاح (نقطة PRO)؛ أي تقدير من سجل التحويلات **استنتاج قد يخطئ** وليس إثبات ملكية.
-- العينات في المستودع عناوين عامة (مثل vitalik.eth) لأغراض التوضيح فقط — لا ملكية ولا علاقة بأصحابها.
-- التغطية: الشبكات المتاحة في الطبقة المجانية من Etherscan؛ بعض الشبكات (مثل BNB Chain وBase) تتطلب خطة مدفوعة.
+MIT License.
 
-## English
+---
 
-Read-only EVM wallet/contract monitoring tools over the Etherscan keyless MCP endpoint (no API key, no account). Wallet report (CSV + one-page Arabic PDF) and smart-contract panel (creation info, verification status, recent activity). Everything is read-only: no signing, no fund movement, no contract changes. See the Arabic sections above for details; public sample addresses are for illustration only.
+## سكربتات النماذج الأولية (src/)
+
+السكربتات الأولى ما زالت في `src/` كما رُفعت سابقًا (تقرير محفظة وتقرير عقد بصيغة DOCX/PDF). الأداة المتكاملة هي `dappman/` أعلاه.
