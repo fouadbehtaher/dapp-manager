@@ -7,6 +7,7 @@ Claude Desktop config (claude_desktop_config.json):
   {"mcpServers": {"dappman": {"command": "python3", "args": ["-m", "dappman", "--db", "/path/to/dappman.db", "mcp-serve"]}}}
 """
 import json, re, sys
+from .client import clean
 
 _ADDR = re.compile(r'^0x[0-9a-fA-F]{40}$')
 _HASH = re.compile(r'^0x[0-9a-fA-F]{64}$')
@@ -64,7 +65,10 @@ def make_tools(store_factory, client_factory):
                 if kinds and r['kind'] not in kinds:
                     continue
                 out.append({**r, 'target_label': t['label'], 'chain': t['chain']})
-        return _text({'transactions': out[:limit], 'note': 'stored rows only; coverage per target applies'})
+        amb = sum(st.ambiguous_rows(t['id']) for t in st.targets() if not addr or t['address'] == addr)
+        leg = sum(st.legacy_rows(t['id']) for t in st.targets() if not addr or t['address'] == addr)
+        return _text({'transactions': out[:limit], 'identity_ambiguous_rows': amb, 'legacy_rows_excluded': leg,
+                      'note': 'stored rows only; coverage per target applies; completeness unproven (provider gives no log index)'})
 
     def get_alerts(a):
         return _text({'alerts': _store().alerts(_limit(a.get('limit'), 30))})
@@ -80,8 +84,24 @@ def make_tools(store_factory, client_factory):
             d = derive(st, t['id'], t['address'])
             d['items'] = d['items'][:200]
             out.append({'address': t['address'], 'chain': t['chain'], 'derived_inventory': d['items'],
-                        'unconfirmed': True, 'window': d['window']})
+                        'unconfirmed': True, 'window': d['window'],
+                        'identity_ambiguous_rows': d['identity_ambiguous_rows'], 'legacy_rows_excluded': d['legacy_rows_excluded']})
         return _text({'inventories': out})
+
+    def confirm_nfts(a):
+        from .nfts import derive
+        from .chainrpc import confirm_items
+        st = _store()
+        addr = _addr(a.get('address'), True)
+        out = []
+        for t in st.targets():
+            if t['address'] != addr or t['kind'] != 'wallet':
+                continue
+            if a.get('chain') and t['chain'] != _chain(a.get('chain')):
+                continue
+            d = derive(st, t['id'], addr)
+            out.append(confirm_items(t['chain'], addr, d['items'], max_items=_limit(a.get('limit'), 25, 50)))
+        return _text({'confirmations': out, 'note': 'read-only eth_call at one pinned block; confirms stored candidates only, does not discover holdings'})
 
     def check_address(a):
         from . import sanctions, reputation
@@ -123,6 +143,8 @@ def make_tools(store_factory, client_factory):
                                {'type': 'object', 'properties': {'limit': {'type': 'integer'}}}),
         'dappman_get_nft_inventory': (get_nft_inventory, 'DERIVED NFT inventory per watched address (from stored transfers; NOT confirmed holdings)',
                                       {'type': 'object', 'properties': {**A_ADDR}}),
+        'dappman_confirm_nfts': (confirm_nfts, 'Confirm derived NFT candidates on-chain (ownerOf/balanceOf, pinned block, keyless public RPC). Not holdings discovery.',
+                                 {'type': 'object', 'properties': {**A_ADDR, **A_CHAIN, 'limit': {'type': 'integer'}}, 'required': ['address']}),
         'dappman_check_address': (check_address, 'Check an address against the cached OFAC SDN crypto list (with list date) and GoPlus reputation signals',
                                   {'type': 'object', 'properties': {**A_ADDR, **A_CHAIN}, 'required': ['address']}),
         'dappman_get_balance': (get_balance, 'Live native balance via keyless Etherscan (read-only)',
@@ -158,7 +180,7 @@ def handle(tools, msg):
             return {'jsonrpc': '2.0', 'id': mid, 'result': tools[name][0](args)}
         except Exception as e:
             return {'jsonrpc': '2.0', 'id': mid, 'result': {'content': [{'type': 'text',
-                    'text': 'error: ' + str(e)[:200]}], 'isError': True}}
+                    'text': 'error: ' + clean(e, 200)}], 'isError': True}}
     if method and method.startswith('notifications/'):
         return None
     return {'jsonrpc': '2.0', 'id': mid, 'error': {'code': -32601, 'message': 'method not supported'}}
