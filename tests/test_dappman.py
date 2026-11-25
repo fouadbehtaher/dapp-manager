@@ -20,7 +20,7 @@ class Fake:
         self.txs = [{'hash': '0x1', 'blockNumber': '10', 'timeStamp': '1700000000', 'from': '0x' + '11' * 20,
                      'to': A, 'value': '0', 'isError': '0', 'functionName': 'transfer(address,uint256)',
                      'input': inp('transfer(address,uint256)'), 'methodId': inp('transfer(address,uint256)')[:10]}]
-        self.src = 'contract X {}'; self.impl = ''; self.fail = set(); self.tt = []
+        self.src = 'contract X {}'; self.impl = ''; self.fail = set(); self.tt = []; self.internal = []
 
     def call(self, tool, args):
         if tool in self.fail: raise ApiError('boom ' + tool)
@@ -30,6 +30,7 @@ class Fake:
             return [{'SourceCode': self.src, 'ContractName': 'X', 'CompilerVersion': 'v0.8', 'Proxy': '1' if self.impl else '0', 'Implementation': self.impl}]
         if tool == 'get_transactions': return list(self.txs)
         if tool == 'get_token_transfers': return list(self.tt)
+        if tool == 'get_internal_transactions': return list(self.internal)
         raise ApiError('unexpected ' + tool)
 
 
@@ -265,12 +266,18 @@ class T(unittest.TestCase):
         f.txs.insert(0, self._own_tx('0xo3', other, ''))       # contract creation style (empty to)
         self.assertNotIn('sensitive_call', self._codes(f, st, t))
 
-    def test_internal_or_routed_calls_are_not_seen(self):
-        # get_internal_transactions is never called by the scanner: calls made through another contract can't alert
+    def test_internal_rows_are_data_only_and_cannot_alert_sensitive(self):
+        # v0.5: internal transactions ARE collected as data (visibility into routed calls), but internal rows
+        # carry no function name/selector, so they can never raise a sensitive_call alert.
         calls = []
         st, f, t = mk(); orig = f.call
         f.call = lambda tool, a: (calls.append(tool), orig(tool, a))[1]
-        scan(f, st, t); self.assertNotIn('get_internal_transactions', calls)
+        scan(f, st, t); self.assertIn('get_internal_transactions', calls)
+        f.internal = [{'hash': '0xi1', 'blockNumber': '50', 'timeStamp': '1700000700', 'from': '0x' + '88' * 20,
+                       'to': A, 'value': str(20 * 10**18), 'isError': '0'}]  # no functionName/methodId keys
+        codes = [c for _, c, _ in scan(f, st, t)['new_alerts']]
+        self.assertIn('new_internal_txs', codes); self.assertIn('large_value_internal', codes)
+        self.assertNotIn('sensitive_call', codes)
 
     def test_forged_label_without_matching_selector_is_ignored(self):
         st, f, t = mk(); scan(f, st, t)
