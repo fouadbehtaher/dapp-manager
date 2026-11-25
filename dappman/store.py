@@ -13,13 +13,22 @@ CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY, target_id INT, ts INT,
 
 
 class Store:
-    def __init__(self, path):
-        self.db = sqlite3.connect(path, check_same_thread=False)
+    def __init__(self, path, readonly=False):
+        if readonly:  # MCP server: guaranteed no writes even if a bug tried one
+            self.db = sqlite3.connect('file:%s?mode=ro' % path, uri=True, check_same_thread=False)
+        else:
+            self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        if readonly:
+            return
         self.db.executescript(SCHEMA)
         cols = [r[1] for r in self.db.execute('PRAGMA table_info(targets)')]
         if 'dapp' not in cols:  # migrate databases created by v0.3
             self.db.execute("ALTER TABLE targets ADD COLUMN dapp TEXT DEFAULT ''"); self.db.commit()
+        tcols = [r[1] for r in self.db.execute('PRAGMA table_info(txs)')]
+        for col in ('contract', 'token_id'):  # migrate databases created by v0.4
+            if col not in tcols:
+                self.db.execute(f"ALTER TABLE txs ADD COLUMN {col} TEXT DEFAULT ''"); self.db.commit()
 
     def add_target(self, kind, chain, address, label, dapp=''):
         self.db.execute('INSERT OR IGNORE INTO targets(kind,chain,address,label,dapp) VALUES(?,?,?,?,?)',
@@ -52,13 +61,24 @@ class Store:
         return {(r[0], r[1]) for r in self.db.execute('SELECT hash,kind FROM txs WHERE target_id=?', (tid,))}
 
     def add_txs(self, tid, rows):
+        cols = [r[1] for r in self.db.execute('PRAGMA table_info(txs)')]
+        wide = 'contract' in cols
         n = 0
         for r in rows:
-            c = self.db.execute('INSERT OR IGNORE INTO txs VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                (tid, r['hash'], r['block'], r['ts'], r['frm'], r['to'], r['value'], r['failed'],
-                 r.get('method', ''), r['kind'], r.get('token', '')))
+            if wide:
+                c = self.db.execute('INSERT OR IGNORE INTO txs(target_id,hash,block,ts,frm,to_,value,failed,method,kind,token,contract,token_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (tid, r['hash'], r['block'], r['ts'], r['frm'], r['to'], r['value'], r['failed'],
+                     r.get('method', ''), r['kind'], r.get('token', ''), r.get('contract', ''), r.get('token_id', '')))
+            else:
+                c = self.db.execute('INSERT OR IGNORE INTO txs VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                    (tid, r['hash'], r['block'], r['ts'], r['frm'], r['to'], r['value'], r['failed'],
+                     r.get('method', ''), r['kind'], r.get('token', '')))
             n += c.rowcount
         self.db.commit(); return n
+
+    def nft_rows(self, tid):
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM txs WHERE target_id=? AND kind IN ('erc721','erc1155') ORDER BY ts", (tid,))]
 
     def add_alert(self, tid, level, code, msg):
         self.db.execute('INSERT INTO alerts(target_id,ts,level,code,msg) VALUES(?,?,?,?,?)',
