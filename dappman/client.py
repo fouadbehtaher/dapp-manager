@@ -5,8 +5,8 @@ MCP_URL = 'https://mcp-keyless.etherscan.io/mcp'
 READ_TOOLS = {'get_native_balance', 'get_transactions', 'get_internal_transactions',
               'get_token_transfers', 'get_contract_source', 'get_contract_creation',
               'get_transaction_status', 'get_supported_chains', 'get_transaction_receipt_status',
-              'get_transaction_by_hash', 'get_gas_oracle'}
-PROXY_TOOLS = {'get_transaction_by_hash'}  # payload is {ok, result} with no status field; result None = unknown hash
+              'get_transaction_by_hash', 'get_gas_oracle', 'get_block_by_timestamp'}
+PROXY_TOOLS = {'get_transaction_by_hash', 'get_supported_chains'}  # payload is {ok, result} with no status field; result None = unknown hash
 
 
 class ApiError(Exception):
@@ -36,7 +36,7 @@ class McpClient:
     def _init(self):
         if self.sid: return
         self._rpc('initialize', {'protocolVersion': '2025-03-26', 'capabilities': {},
-                                 'clientInfo': {'name': 'dappman', 'version': '0.3'}}, 1)
+                                 'clientInfo': {'name': 'dappman', 'version': '0.5'}}, 1)
         self._rpc('notifications/initialized')
 
     def call(self, tool, args):
@@ -59,6 +59,9 @@ class McpClient:
                 return p.get('result')
             res = p.get('result')
             if isinstance(res, str) and 'No ' in res and 'found' in res:
+                return []
+            msgl = str(p.get('message') or '').lower()
+            if res == [] and 'no ' in msgl and 'found' in msgl:  # empty category in this window: status '0', result []
                 return []
             msg = str(res or p.get('message') or 'unknown')[:150]
             if 'rate' in msg.lower():
