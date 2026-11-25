@@ -17,19 +17,23 @@ def derive(store, tid, addr):
     for r in store.nft_rows(tid):
         n_rows += 1
         key = (r['contract'].lower(), r['token_id'])
-        qty, sym = bal.get(key, [0, (r['token'] or '').split('|')[0][:20]])
+        qty, sym, _k = bal.get(key, [0, (r['token'] or '').split('|')[0][:20], r['kind']])
         amt = 1 if r['kind'] == 'erc721' else _int(r['value'], 1)
         if (r['to_'] or '').lower() == addr:
             qty += amt
         if (r['frm'] or '').lower() == addr:
             qty -= amt
-        bal[key] = [qty, sym]
-    items = [{'contract': c, 'token_id': i, 'qty': q, 'symbol': s}
-             for (c, i), (q, s) in sorted(bal.items()) if q > 0]
-    negative = sum(1 for q, _ in bal.values() if q < 0)  # more out than in: history incomplete for these
+        bal[key] = [qty, sym, r['kind']]
+    items = [{'contract': c, 'token_id': i, 'qty': q, 'symbol': s, 'kind': k}
+             for (c, i), (q, s, k) in sorted(bal.items()) if q > 0]
+    negative = sum(1 for v in bal.values() if v[0] < 0)  # more out than in: history incomplete for these
+    legacy, amb = store.legacy_rows(tid), store.ambiguous_rows(tid)
     return {'items': items, 'derived_from_rows': n_rows, 'inconsistent_tokens': negative,
+            'legacy_rows_excluded': legacy, 'identity_ambiguous_rows': amb,
             'window': 'derived from stored transfers only; unconfirmed: not current ownership (missing/non-standard events, '
                       'partial sync, reorgs, ERC-1155 batch edge cases, burns/mints not independently checked)'
+                      + (f'; {legacy} pre-migration rows are excluded until `python3 -m dappman sync` re-fetches them' if legacy else '')
+                      + (f'; {amb} rows have byte-identical twins in one tx and the provider gives no log index, so their count is uncertain' if amb else '')
                       + (f'; {negative} token(s) show more out than in, so history is incomplete for them' if negative else '')}
 
 
