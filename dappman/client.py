@@ -13,6 +13,13 @@ class ApiError(Exception):
     pass
 
 
+def clean(s, n=160):
+    """Provider text is untrusted: drop control characters, collapse whitespace, cap the length. Keeps the diagnostic reason."""
+    t = ''.join(ch if ch.isprintable() else ' ' for ch in str(s))
+    t = ' '.join(t.split())
+    return t if len(t) <= n else t[:n - 1] + '…'
+
+
 class McpClient:
     def __init__(self, url=MCP_URL, sleep=0.25, retries=3, timeout=40):
         self.url, self.sleep, self.retries, self.timeout = url, sleep, retries, timeout
@@ -51,8 +58,10 @@ class McpClient:
                 d = self._rpc('tools/call', {'name': tool, 'arguments': args}, uuid.uuid4().int % 10**9)
                 p = json.loads(d['result']['content'][0]['text'])
             except Exception as e:
-                last = str(e)[:150]; self.sid = None; time.sleep(1 + i); continue
+                last = clean(e, 150); self.sid = None; time.sleep(1 + i); continue
             time.sleep(self.sleep)
+            if not isinstance(p, dict):
+                raise ApiError('unrecognised provider reply: ' + clean(json.dumps(p, default=str), 120))
             if tool in PROXY_TOOLS and p.get('ok') is True and 'result' in p:
                 return p.get('result')
             if p.get('ok') and p.get('status') == '1':
@@ -63,8 +72,8 @@ class McpClient:
             msgl = str(p.get('message') or '').lower()
             if res == [] and 'no ' in msgl and 'found' in msgl:  # empty category in this window: status '0', result []
                 return []
-            msg = str(res or p.get('message') or 'unknown')[:150]
+            msg = clean(res or p.get('message') or ('unrecognised provider reply: ' + json.dumps(p, default=str)), 200)
             if 'rate' in msg.lower():
                 last = msg; time.sleep(2 + 2 * i); continue
             raise ApiError(msg)
-        raise ApiError(last or 'failed')
+        raise ApiError(clean(last) or 'failed')
