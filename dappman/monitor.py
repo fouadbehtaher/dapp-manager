@@ -5,7 +5,9 @@ from decimal import Decimal
 from .client import ApiError
 
 ADDR = re.compile(r'^0x[0-9a-fA-F]{40}$')
-CHAINS = {'1': ('Ethereum', 'ETH'), '137': ('Polygon', 'POL'), '42161': ('Arbitrum One', 'ETH')}
+CHAINS = {'1': ('Ethereum', 'ETH'), '56': ('BNB Smart Chain', 'BNB'), '137': ('Polygon', 'POL'),
+          '42161': ('Arbitrum One', 'ETH'), '8453': ('Base', 'ETH'), '10': ('Optimism', 'ETH'),
+          '43114': ('Avalanche C-Chain', 'AVAX')}
 PAGE = 50
 MAX_PAGES = 5
 
@@ -81,11 +83,17 @@ def _method(r):
 
 
 def _tx(r, kind):
+    """One stored row per event. internal rows carry no function name/selector (method stays ''),
+    so they can never raise a sensitive_call alert. NFT rows keep contract/token_id in their own columns."""
+    nft = kind in ('erc721', 'erc1155')
     return {'hash': r.get('hash') or r.get('transactionHash', ''), 'block': int(r.get('blockNumber') or 0),
             'ts': int(r.get('timeStamp') or 0), 'frm': (r.get('from') or '').lower(), 'to': (r.get('to') or '').lower(),
-            'value': str(r.get('value') or '0'), 'failed': 1 if r.get('isError') == '1' else 0,
-            'method': _method(r), 'kind': kind,
-            'token': (r.get('tokenSymbol') or '')[:20] + ('|' + str(r.get('tokenDecimal') or '') if kind == 'erc20' else '')}
+            'value': str(r.get('tokenValue') if nft and kind == 'erc1155' else ('1' if nft else r.get('value') or '0')),
+            'failed': 1 if r.get('isError') == '1' else 0,
+            'method': _method(r) if not nft else '', 'kind': kind,
+            'token': (r.get('tokenSymbol') or '')[:20] + ('|' + str(r.get('tokenDecimal') or '') if kind == 'erc20' else ''),
+            'contract': (r.get('contractAddress') or '').lower() if nft else '',
+            'token_id': str(r.get('tokenID') or '') if nft else ''}
 
 
 def scan(client, store, target, big_native=Decimal(10)):
@@ -143,10 +151,13 @@ def scan(client, store, target, big_native=Decimal(10)):
         return attempt(name, run) or []
 
     rows = pages('transactions', 'get_transactions', {'address': addr}, 'normal')
-    targs = {'contractaddress': addr, 'standard': 'erc20'} if kind == 'contract' else {'address': addr, 'standard': 'erc20'}
-    rows += pages('token_transfers', 'get_token_transfers', targs, 'erc20')
+    rows += pages('internal_transactions', 'get_internal_transactions', {'address': addr}, 'internal')
+    for std, cat in (('erc20', 'token_transfers'), ('erc721', 'nft_721'), ('erc1155', 'nft_1155')):
+        targs = {'contractaddress': addr, 'standard': std} if kind == 'contract' else {'address': addr, 'standard': std}
+        rows += pages(cat, 'get_token_transfers', targs, std)
     snap['coverage'] = (f'baseline = latest {PAGE} per category; later scans page back to the last known record '
-                        f'(max {MAX_PAGES * PAGE}). Not full history.')
+                        f'(max {MAX_PAGES * PAGE}). Categories: normal/internal/ERC-20/ERC-721/ERC-1155. '
+                        f'Not full history unless `dappman sync` ran (bounded sync, see its own limits).')
     snap['gaps'] = gaps
     fresh = [r for r in rows if (r['hash'], r['kind']) not in known]
     store.add_txs(tid, rows)
@@ -173,6 +184,33 @@ def scan(client, store, target, big_native=Decimal(10)):
         newt = [r for r in fresh if r['kind'] == 'erc20']
         if newt:
             alerts.append(('info', 'new_token_transfers', f'{len(newt)} new ERC-20 transfers'))
+        newi = [r for r in fresh if r['kind'] == 'internal']
+        if newi:
+            alerts.append(('info', 'new_internal_txs', f'{len(newi)} new internal transactions (contract-executed value movement; no function names visible)'))
+        newn2 = [r for r in fresh if r['kind'] in ('erc721', 'erc1155')]
+        if newn2:
+            alerts.append(('info', 'new_nft_transfers', f'{len(newn2)} new NFT transfers (ERC-721/1155 events; a transfer event is not proof of current ownership)'))
+        bigi = [r for r in newi if eth(r['value']) >= big_native]
+        for r in bigi:
+            alerts.append(('warn', 'large_value_internal', f'internal movement of native value {fmt(eth(r["value"]))} {sym} (native coin units, not USD) in {r["hash"][:12]}...'))
+    from . import sanctions
+    ofac = sanctions.load(store)
+    if ofac is None:
+        snap['sanctions_note'] = 'off: OFAC list not downloaded (dappman sanctions-update)'
+    else:
+        snap['sanctions_list_date'] = ofac['publish_date']
+    if not first:  # more alerts only after a baseline exists
+        if ofac is not None:
+            seen_cp = set()
+            for r in fresh:
+                for cp in (r['frm'], r['to']):
+                    if not cp or cp == addr or cp in seen_cp:
+                        continue
+                    seen_cp.add(cp)
+                    hit = ofac['entries'].get(cp)
+                    if hit:
+                        alerts.append(('critical', 'sanctioned_counterparty',
+                            f"counterparty {cp[:10]}... appears on the OFAC SDN list as '{hit['entity']}' ({'/'.join(hit['currencies'])} entry, list dated {ofac['publish_date']}) in {r['hash'][:12]}... Presence on the list is a fact about the list, not a legal conclusion; verify before acting"))
         for k, code, lvl in (('verified', 'verification_changed', 'warn'), ('source_hash', 'source_changed', 'critical'),
                              ('implementation', 'implementation_changed', 'critical')):
             if k in prev and k in snap and prev[k] != snap[k]:
