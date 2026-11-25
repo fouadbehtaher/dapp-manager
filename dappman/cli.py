@@ -10,6 +10,14 @@
   dappman profile [--dapp NAME]
   dappman export --out DIR    CSV of stored rows + alerts
   dappman serve [--port 8787] local dashboard (127.0.0.1)
+  dappman sync <0xaddr> [--chain 1] [--categories normal,internal,erc20,erc721,erc1155]
+                            bounded historical sync (resumable, checkpoints per category)
+  dappman history <0xaddr> [--chain 1] [--categories ...] [--limit N] [--json]   stored rows
+  dappman nfts <0xaddr> [--chains 1,137] [--json]   DERIVED NFT inventory (unconfirmed, see README)
+  dappman check-address <0xaddr> [--chain 1] [--json]   OFAC SDN (with list date) + GoPlus signals
+  dappman sanctions-update   refresh the cached OFAC SDN crypto-address list
+  dappman chains             chains the keyless API currently reports
+  dappman mcp-serve          local MCP server on stdio for AI agents (read-only)
 Data: SQLite file (--db, default ./dappman.db). No keys, no signing, no writes to chains."""
 import argparse, csv, json, os, sys, time
 from decimal import Decimal
@@ -38,6 +46,19 @@ def main(argv=None, client=None):
     al = sub.add_parser('alerts'); al.add_argument('--limit', type=int, default=30); al.add_argument('--json', action='store_true')
     e = sub.add_parser('export'); e.add_argument('--out', default='export')
     sv = sub.add_parser('serve'); sv.add_argument('--port', type=int, default=8787)
+    sy = sub.add_parser('sync'); sy.add_argument('address'); sy.add_argument('--chain', default='1')
+    sy.add_argument('--categories', default='normal,internal,erc20,erc721,erc1155')
+    sy.add_argument('--window', type=int, default=500000, help='blocks per fetch window (auto-shrinks at the 10k cap)')
+    hi = sub.add_parser('history'); hi.add_argument('address'); hi.add_argument('--chain', default='1')
+    hi.add_argument('--categories', default='normal,internal,erc20,erc721,erc1155'); hi.add_argument('--limit', type=int, default=50)
+    hi.add_argument('--json', action='store_true')
+    nf = sub.add_parser('nfts'); nf.add_argument('address'); nf.add_argument('--chains', default='1')
+    nf.add_argument('--json', action='store_true')
+    ck = sub.add_parser('check-address'); ck.add_argument('address'); ck.add_argument('--chain', default='1')
+    ck.add_argument('--json', action='store_true'); ck.add_argument('--no-refresh', action='store_true')
+    sub.add_parser('sanctions-update')
+    sub.add_parser('chains')
+    sub.add_parser('mcp-serve')
     args = p.parse_args(argv)
     st = Store(args.db)
     mk = (lambda: client) if client else McpClient
@@ -117,7 +138,100 @@ def main(argv=None, client=None):
         print(f'dashboard: http://127.0.0.1:{args.port}  (Ctrl+C to stop)')
         try: srv.serve_forever()
         except KeyboardInterrupt: pass
+    elif args.cmd == 'sync':
+        from .history import sync_target
+        addr = norm_addr(args.address)
+        tid = st.add_target('wallet', args.chain, addr, args.address[:10], '')  # idempotent; never relabels
+        t = [x for x in st.targets() if x['id'] == tid][0]
+        from .monitor import _tx
+        cats = [c.strip() for c in args.categories.split(',') if c.strip()]
+        rep = sync_target(mk(), st, t, _tx, kinds=cats, window=args.window,
+                          progress=lambda k, b, tip, n: print(f'  [{k}] block {b}/{tip} ({n} rows new)', flush=True))
+        for k, v in rep['categories'].items():
+            print(f"{k}: {v['status']} (synced through block {v.get('synced_through', '?')}, {v.get('rows', 0)} new rows)" + (f" | {v['note']}" if v.get('note') else ''))
+        print('tip block:', rep['tip'], '| API calls:', rep['calls'])
+        print('limits:', rep['limits'])
+    elif args.cmd == 'history':
+        addr = norm_addr(args.address)
+        t = [x for x in st.targets() if x['address'] == addr and x['chain'] == args.chain]
+        if not t:
+            print('address is not watched; run: dappman sync', addr, '--chain', args.chain); return 2
+        cats = [c.strip() for c in args.categories.split(',') if c.strip()]
+        rows = [r for r in st.recent_txs(t[0]['id'], 100000) if r['kind'] in cats][:args.limit]
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=1)); return 0
+        for r in rows:
+            print(time.strftime('%Y-%m-%d %H:%M', time.gmtime(r['ts'])), r['kind'], r['hash'][:14] + '...',
+                  (r['frm'] or '')[:10], '->', (r['to_'] or '')[:10], 'value', r['value'], r.get('token') or '', ('FAILED' if r['failed'] else ''))
+        print(f'{len(rows)} stored rows shown (limit {args.limit}). Coverage depends on sync state; this is stored data, not a live query.')
+    elif args.cmd == 'nfts':
+        from .history import sync_target
+        from .nfts import derive
+        from .monitor import _tx
+        addr = norm_addr(args.address)
+        out = []
+        for ch in [c.strip() for c in args.chains.split(',') if c.strip()]:
+            tid = st.add_target('wallet', ch, addr, args.address[:10], '')
+            t = [x for x in st.targets() if x['id'] == tid][0]
+            rep = sync_target(mk(), st, t, _tx, kinds=('erc721', 'erc1155'))
+            d = derive(st, tid, addr)
+            stt = {k: v.get('synced_through') for k, v in rep['categories'].items()}
+            out.append({'chain': ch, 'derived_inventory': d['items'], 'derived_from_rows': d['derived_from_rows'],
+                        'synced_through': stt, 'unconfirmed': True, 'window': d['window'], 'sync_limits': rep['limits']})
+        if args.json:
+            print(json.dumps(out, ensure_ascii=False, indent=1)); return 0
+        for ch in out:
+            print(f"chain {ch['chain']}: {len(ch['derived_inventory'])} candidate NFT item(s), derived from {ch['derived_from_rows']} stored transfers, synced through {ch['synced_through']}")
+            for it in ch['derived_inventory'][:50]:
+                print(f"   {it['symbol'] or 'NFT'} #{it['token_id']} x{it['qty']}  contract {it['contract'][:12]}...")
+        print('DERIVED candidate inventory, NOT confirmed current holdings: transfer events cannot prove ownership')
+        print('(non-standard contracts, indexer gaps, reorgs). Confirming ownership needs an on-chain ownerOf/balanceOf read')
+        print('or a verified holdings provider (keyed/paid API, not included).')
+    elif args.cmd == 'check-address':
+        from . import sanctions, reputation
+        addr = norm_addr(args.address)
+        if not args.no_refresh and sanctions.stale(st):
+            print('refreshing OFAC SDN list (one-off ~30MB download)...', file=sys.stderr)
+            try: print('OFAC list dated', sanctions.refresh(st)['publish_date'], file=sys.stderr)
+            except Exception as ex: print('OFAC refresh failed: ' + str(ex)[:100] + ' (check continues with any older cached list)', file=sys.stderr)
+        res = {'address': addr, 'chain': args.chain, 'ofac_sdn': sanctions.check(st, addr),
+               'goplus': reputation.check(addr, args.chain)}
+        loc = [x for x in st.targets() if x['address'] == addr]
+        res['local'] = {'watched': bool(loc), 'stored_rows': st.tx_count(loc[0]['id']) if loc else 0,
+                        'label': loc[0]['label'] if loc else ''}
+        print(json.dumps(res, ensure_ascii=False, indent=1) if args.json else _fmt_check(res))
+    elif args.cmd == 'sanctions-update':
+        from . import sanctions
+        r = sanctions.refresh(st)
+        print(f"OFAC SDN crypto list cached: {r['addresses']} addresses, list published {r['publish_date']} (source: {sanctions.OFAC_URL})")
+    elif args.cmd == 'chains':
+        r = mk().call('get_supported_chains', {})
+        rows = r.get('result', r) if isinstance(r, dict) else r
+        for c in rows:
+            print(f"{c.get('chainid'):>8}  {c.get('chainname')}  ({c.get('comment') or ''})")
+        print(f"{len(rows)} chains reported by the keyless API right now. Listing is not a per-chain test.")
+    elif args.cmd == 'mcp-serve':
+        from .mcpserver import make_tools, serve_stdio
+        serve_stdio(make_tools(lambda: Store(args.db, readonly=True), mk))
     return 0
+
+
+def _fmt_check(res):
+    o, g = res['ofac_sdn'], res['goplus']
+    lines = [f"address {res['address']} (chain {res['chain']})"]
+    if o['state'] == 'listed':
+        lines.append(f"OFAC SDN: LISTED as '{o['entity']}' ({'/'.join(o['currencies'])} entry, list dated {o['publish_date']}). A fact about the list, not a legal conclusion.")
+    elif o['state'] == 'not_listed':
+        lines.append(f"OFAC SDN: not on the list dated {o['publish_date']}. Absence proves nothing.")
+    else:
+        lines.append('OFAC SDN: unknown (no cached list; run dappman sanctions-update)')
+    if g['ok']:
+        lines.append(f"GoPlus signals: {', '.join(g['flags']) if g['flags'] else 'none'} (sources: {g['data_source']}). {g['note']}")
+    else:
+        lines.append('GoPlus signals: ' + g['error'])
+    loc = res['local']
+    lines.append(f"local: {'watched, ' + str(loc['stored_rows']) + ' stored rows' if loc['watched'] else 'not watched'}")
+    return '\n'.join(lines)
 
 
 if __name__ == '__main__':
