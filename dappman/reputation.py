@@ -4,6 +4,7 @@ Individual flags can be wrong in either direction; 'no flags' is not proof of le
 API docs: https://docs.gopluslabs.io/reference/address-security
 """
 import json, urllib.parse, urllib.request
+from .client import clean
 
 API = 'https://api.gopluslabs.io/api/v1/address_security/'
 
@@ -29,7 +30,7 @@ def check(address, chainid='1', timeout=30, opener=None):
         req = urllib.request.Request(url, headers={'User-Agent': 'dappman/0.5 (read-only reputation check)'})
         d = json.loads(op(req, timeout=timeout).read().decode())
     except Exception as e:
-        return {'ok': False, 'error': 'GoPlus unavailable: ' + str(e)[:120]}
+        return {'ok': False, 'error': 'GoPlus unavailable: ' + clean(e, 120)}
     if d.get('code') != 1 or not isinstance(d.get('result'), dict):
         return {'ok': False, 'error': 'GoPlus returned code %r (%s) for chain %s' % (d.get('code'), str(d.get('message'))[:80], chainid)}
     r = d['result']
