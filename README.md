@@ -36,6 +36,8 @@ python3 -m dappman nfts WALLET_ADDRESS --chains 1,137,42161
 python3 -m dappman check-address 0xADDRESS --chain 1
 python3 -m dappman sanctions-update
 python3 -m dappman chains
+python3 -m dappman verify-identity 0xADDRESS --chain 1
+python3 -m dappman verify-traces 0xADDRESS --chain 1 --max 25
 python3 -m dappman mcp-serve
 
 python3 -m unittest discover -s tests -v
@@ -109,3 +111,31 @@ A result is a snapshot AT that block, never current ownership: any later transfe
 
 **Layout.** `provider.py` (data source interface; Etherscan keyless adapter), `events.py` (row mapping and identity),
 `monitor.py` (collect / persist / evaluate), `history.py` (bounded sync), `chainrpc.py`, `config.py`.
+
+**Identity verification from receipts (v0.7).** `python3 -m dappman verify-identity 0xADDR --chain 1` fetches the
+transaction receipt (`eth_getTransactionReceipt`) of every NFT transaction that still has byte-identical twin rows
+and derives the ERC-721 / ERC-1155 (single and batch) transfer events from the raw logs, with their logIndex. It reconciles instead of
+forcing a match: where the receipt and the provider rows differ, both counts are stored and shown (`only_receipt`, `only_provider`) and
+the receipt is used for the derived inventory. `--all-nft` verifies every stored NFT transaction, not only the ambiguous ones.
+Each transaction ends in an explicit state: `verified`, `pending` (fewer than 12 confirmations), `unknown` (no usable answer, reason kept),
+`inconsistent` (receipt contradicts the stored block/hash/logs) or `reorg_suspected` (the block hash changed since the last check).
+Only `verified` receipts replace provider rows, and a transient failure never downgrades an earlier `verified` and never refreshes it: the old result keeps its date and the row shows `last_check` (state, reason, time) so the UI says "verified earlier, last check failed".
+What it does not do: it does not find transactions the provider never returned, it does not cover ERC-20 twins or internal-transfer twins (internal twins: see `verify-traces` below; ERC-20 twins stay flagged), and `verified` is a 12-confirmation convention, not a finality proof. History completeness stays unproven.
+Endpoints (config.py `RECEIPT_RPC_URLS`) are tried in order only when one gives no answer; an HTTP 401/403/429 stops the run and nothing is
+retried on another endpoint. Their terms were reviewed (Nov 25 2026): PublicNode grants a limited, revocable licence with no published numeric limit; MEV Blocker publishes no read terms or limits. No request volume is approved, so treat both as best-effort public endpoints and set your own in `config.py` for heavy use. History, `nfts`, the dashboard and MCP (`dappman_identity_status`) show
+`receipt_verified` / `ambiguous` / `provider_only` per row.
+
+**Internal-transfer identity from traces (v0.7).** `python3 -m dappman verify-traces 0xADDR --chain 1 --max 25 --json` fetches `trace_transaction`
+for each tx that has byte-identical internal-transfer rows and compares the value-moving calls touching your address with the provider rows
+(failed calls, delegate/static calls, the top-level tx and zero-value calls are excluded). States per tx: `match`, `trace_has_more`,
+`provider_has_more`, `mismatch`, `pending` (fewer than 12 confirmations), `inconsistent` (trace belongs to another tx or block), `unknown`.
+Only an exact `match` removes the rows from `identity_ambiguous_rows`; everything else keeps them flagged.
+Endpoint (config.py `TRACE_RPC_URLS`): `https://eth.drpc.org`, Ethereum only. Of 8 free keyless endpoints tried on Nov 26 2026 only this one answered `trace_transaction`
+(the others returned 401/403/406, "method not found" or required an API key). dRPC's rate-limiting page (checked Nov 27 2026) says free nodes usually allow about 25 requests per second,
+with a 2 second timeout per call; the tool waits 0.5 s between calls and caps a run with `--max`. Its full terms of service were NOT reviewed, so treat it as a best-effort public endpoint.
+An HTTP 401/403/429 stops the run and nothing is retried elsewhere.
+
+**What was tested (Nov 27 2026), stated plainly.** 133 unit tests pass offline (Python 3.10). One live run: public address vitalik.eth (chosen only because it has many internal transfers),
+a bounded recent slice of 573 internal rows in 540 txs synced with 12 Etherscan page reads. 33 txs had twin rows (66 rows); `verify-traces` returned `match` for all 33, and a control of 20 non-twin txs also matched (53 of 53), with no refusals.
+That shows trace and Etherscan agree on count, value and direction for those txs on one address and one endpoint. It does not prove the provider returned every transaction, was not run on other chains, and
+history completeness and current NFT holdings remain unproven. Receipt-based NFT identity was tested live on 49 transactions.
