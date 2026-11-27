@@ -61,10 +61,13 @@ def make_tools(store_factory, client_factory):
         for t in st.targets():
             if addr and t['address'] != addr:
                 continue
+            idm = st.row_identity(t['id']); stale = st.stale_checks(t['id'])
             for r in st.recent_txs(t['id'], limit):
                 if kinds and r['kind'] not in kinds:
                     continue
-                out.append({**r, 'target_label': t['label'], 'chain': t['chain']})
+                out.append({**r, 'target_label': t['label'], 'chain': t['chain'],
+                            'identity': idm.get(r['hash'], 'provider_only') if r['kind'] in ('erc721', 'erc1155') else 'provider_only',
+                            **({'last_check': stale[r['hash']]} if r['hash'] in stale and idm.get(r['hash']) == 'receipt_verified' else {})})
         amb = sum(st.ambiguous_rows(t['id']) for t in st.targets() if not addr or t['address'] == addr)
         leg = sum(st.legacy_rows(t['id']) for t in st.targets() if not addr or t['address'] == addr)
         return _text({'transactions': out[:limit], 'identity_ambiguous_rows': amb, 'legacy_rows_excluded': leg,
@@ -85,7 +88,7 @@ def make_tools(store_factory, client_factory):
             d['items'] = d['items'][:200]
             out.append({'address': t['address'], 'chain': t['chain'], 'derived_inventory': d['items'],
                         'unconfirmed': True, 'window': d['window'],
-                        'identity_ambiguous_rows': d['identity_ambiguous_rows'], 'legacy_rows_excluded': d['legacy_rows_excluded']})
+                        'identity_ambiguous_rows': d['identity_ambiguous_rows'], 'receipts': d['receipts'], 'legacy_rows_excluded': d['legacy_rows_excluded']})
         return _text({'inventories': out})
 
     def confirm_nfts(a):
@@ -102,6 +105,12 @@ def make_tools(store_factory, client_factory):
             d = derive(st, t['id'], addr)
             out.append(confirm_items(t['chain'], addr, d['items'], max_items=_limit(a.get('limit'), 25, 50)))
         return _text({'confirmations': out, 'note': 'read-only eth_call at one pinned block; confirms stored candidates only, does not discover holdings'})
+
+    def identity_status(a):
+        st = _store(); addr = _addr(a.get('address'))
+        out = [{'address': t['address'], 'chain': t['chain'], 'receipts': st.receipt_summary(t['id']),
+                'identity_ambiguous_rows': st.ambiguous_rows(t['id'])} for t in st.targets() if t['kind'] == 'wallet' and (not addr or t['address'] == addr)]
+        return _text({'identity': out, 'note': 'read-only status of receipt verification already stored; verification itself runs via `python3 -m dappman verify-identity` (network + DB writes, not exposed over MCP)'})
 
     def check_address(a):
         from . import sanctions, reputation
@@ -145,6 +154,8 @@ def make_tools(store_factory, client_factory):
                                       {'type': 'object', 'properties': {**A_ADDR}}),
         'dappman_confirm_nfts': (confirm_nfts, 'Confirm derived NFT candidates on-chain (ownerOf/balanceOf, pinned block, keyless public RPC). Not holdings discovery.',
                                  {'type': 'object', 'properties': {**A_ADDR, **A_CHAIN, 'limit': {'type': 'integer'}}, 'required': ['address']}),
+        'dappman_identity_status': (identity_status, 'Receipt-based event identity status per watched wallet (stored results only; completeness stays unproven)',
+                                    {'type': 'object', 'properties': {**A_ADDR}}),
         'dappman_check_address': (check_address, 'Check an address against the cached OFAC SDN crypto list (with list date) and GoPlus reputation signals',
                                   {'type': 'object', 'properties': {**A_ADDR, **A_CHAIN}, 'required': ['address']}),
         'dappman_get_balance': (get_balance, 'Live native balance via keyless Etherscan (read-only)',

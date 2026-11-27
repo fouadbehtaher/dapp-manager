@@ -13,6 +13,8 @@
   python3 -m dappman sync <0xaddr> [--chain 1] [--categories normal,internal,erc20,erc721,erc1155]
                             bounded historical sync (resumable, checkpoints per category)
   dappman history <0xaddr> [--chain 1] [--categories ...] [--limit N] [--json]   stored rows
+  dappman verify-traces <0xaddr> [--chain 1] [--max 25]   resolve internal-transfer twins via trace_transaction
+  dappman verify-identity <0xaddr> [--chain 1] [--max 100]   resolve NFT event identity from tx receipts
   dappman nfts <0xaddr> [--chains 1,137] [--json]   DERIVED NFT inventory (unconfirmed, see README)
   dappman check-address <0xaddr> [--chain 1] [--json]   OFAC SDN (with list date) + GoPlus signals
   dappman sanctions-update   refresh the cached OFAC SDN crypto-address list
@@ -56,6 +58,10 @@ def main(argv=None, client=None):
     hi = sub.add_parser('history'); hi.add_argument('address'); hi.add_argument('--chain', default='1')
     hi.add_argument('--categories', default='normal,internal,erc20,erc721,erc1155'); hi.add_argument('--limit', type=int, default=50)
     hi.add_argument('--json', action='store_true')
+    vi = sub.add_parser('verify-identity'); vi.add_argument('address'); vi.add_argument('--chain', default='1'); vi.add_argument('--max', type=int, default=100)
+    vi.add_argument('--all-nft', action='store_true', help='verify every stored NFT tx, not only identity-ambiguous ones'); vi.add_argument('--json', action='store_true')
+    vt = sub.add_parser('verify-traces'); vt.add_argument('address'); vt.add_argument('--chain', default='1'); vt.add_argument('--max', type=int, default=25)
+    vt.add_argument('--json', action='store_true')
     nf = sub.add_parser('nfts'); nf.add_argument('address'); nf.add_argument('--chains', default='1')
     nf.add_argument('--json', action='store_true')
     nf.add_argument('--confirm', action='store_true', help='confirm candidates on-chain via keyless public RPC (ownerOf/balanceOf at one pinned block)')
@@ -217,16 +223,74 @@ def _cmd_history(args, st, mk):
         print('address is not watched; run: python3 -m dappman sync', addr, '--chain', args.chain); return 2
     cats = [c.strip() for c in args.categories.split(',') if c.strip()]
     rows = [r for r in st.recent_txs(t[0]['id'], 100000) if r['kind'] in cats][:args.limit]
+    idm = st.row_identity(t[0]['id'])
+    stale = st.stale_checks(t[0]['id'])
+    for r in rows:
+        r['identity'] = idm.get(r['hash'], 'provider_only') if r['kind'] in ('erc721', 'erc1155') else 'provider_only'
+        if r['identity'] == 'receipt_verified' and r['hash'] in stale: r['last_check'] = stale[r['hash']]
     if args.json:
-        print(json.dumps({'rows': rows, 'identity_ambiguous_rows': st.ambiguous_rows(t[0]['id']),
+        print(json.dumps({'rows': rows, 'identity_ambiguous_rows': st.ambiguous_rows(t[0]['id']), 'receipts': st.receipt_summary(t[0]['id']),
                           'legacy_rows_excluded': st.legacy_rows(t[0]['id']), 'completeness': 'unproven'}, ensure_ascii=False, indent=1)); return 0
     for r in rows:
         print(time.strftime('%Y-%m-%d %H:%M', time.gmtime(r['ts'])), r['kind'], r['hash'][:14] + '...',
-              (r['frm'] or '')[:10], '->', (r['to_'] or '')[:10], 'value', r['value'], r.get('token') or '', ('FAILED' if r['failed'] else ''))
+              (r['frm'] or '')[:10], '->', (r['to_'] or '')[:10], 'value', r['value'], r.get('token') or '', ('FAILED' if r['failed'] else ''), ('[verified EARLIER; LAST CHECK FAILED]' if r.get('last_check') else '[receipt-verified]' if r['identity'] == 'receipt_verified' else '[AMBIGUOUS]' if r['identity'] == 'ambiguous' else ''))
     amb, leg = st.ambiguous_rows(t[0]['id']), st.legacy_rows(t[0]['id'])
     print(f'{len(rows)} stored rows shown (limit {args.limit}). Coverage depends on sync state; this is stored data, not a live query.')
     if amb: print(f'WARNING: {amb} stored rows have byte-identical twins in one tx; the provider gives no log index, so their count is uncertain.')
     if leg: print(f'WARNING: {leg} rows from before the v0.6 migration are excluded; run: python3 -m dappman sync {addr} --chain {args.chain}')
+    return 0
+
+
+def _cmd_verify_traces(args, st, mk):
+    from .traces import TraceSource, verify_traces
+    addr = norm_addr(args.address)
+    t = [x for x in st.targets() if x['address'] == addr and x['chain'] == args.chain]
+    if not t:
+        print('address is not watched; run: python3 -m dappman sync', addr, '--chain', args.chain); return 2
+    tid = t[0]['id']
+    hashes = st.trace_hashes(tid); total = len(hashes)
+    rep = verify_traces(st, tid, addr, args.chain, TraceSource(args.chain), hashes[:args.max])
+    rep.update({'candidates': total, 'not_attempted': total - rep['checked'], 'summary': st.trace_summary(tid),
+                'identity_ambiguous_rows': st.ambiguous_rows(tid),
+                'completeness': 'unproven: a matching trace fixes internal-transfer identity only for txs the provider returned; endpoint terms and rate limits unreviewed'})
+    if args.json:
+        print(json.dumps(rep, ensure_ascii=False, indent=1)); return 0
+    print(f"checked {rep['checked']} of {total} tx (tip {rep['tip']}, host {rep['host']}): " + (', '.join(f'{k}={v}' for k, v in sorted(rep['states'].items())) or 'none'))
+    if rep['stopped']:
+        print('STOPPED: an endpoint refused the request (' + rep['stopped'] + '). Nothing was retried elsewhere; rerun later.')
+    if rep['not_attempted']:
+        print(f"{rep['not_attempted']} tx not attempted (limit --max {args.max}); rerun to continue")
+    print(f"rows still identity-ambiguous: {rep['identity_ambiguous_rows']}. " + rep['completeness'])
+    return 0
+
+
+def _cmd_verify_identity(args, st, mk):
+    from .receipts import ReceiptSource, verify
+    addr = norm_addr(args.address)
+    t = [x for x in st.targets() if x['address'] == addr and x['chain'] == args.chain]
+    if not t:
+        print('address is not watched; run: python3 -m dappman sync', addr, '--chain', args.chain); return 2
+    tid = t[0]['id']
+    hashes = st.ambiguous_hashes(tid, include_all_nft=args.all_nft)
+    total = len(hashes)
+    hashes = hashes[:args.max]
+    src = ReceiptSource(args.chain)
+    rep = verify(st, tid, addr, args.chain, src, hashes)
+    rep.update({'candidates': total, 'not_attempted': total - rep['checked'], 'summary': st.receipt_summary(tid),
+                'identity_ambiguous_rows': st.ambiguous_rows(tid),
+                'completeness': 'unproven: receipts fix event identity only for txs the provider returned; txs it omitted are not found'})
+    if args.json:
+        print(json.dumps(rep, ensure_ascii=False, indent=1)); return 0
+    print(f"checked {rep['checked']} of {total} tx (tip {rep['tip']}, last host {rep['host']}): " + (', '.join(f'{k}={v}' for k, v in sorted(rep['states'].items())) or 'none'))
+    if rep['provider_mismatch']:
+        print(f"{len(rep['provider_mismatch'])} tx where the receipt differs from the provider rows (receipt is used for inventory):")
+        for m in rep['provider_mismatch'][:10]:
+            print(f"   {m['hash'][:14]}... only_in_receipt={m['only_receipt']} only_in_provider={m['only_provider']}")
+    if rep['stopped']:
+        print('STOPPED: an endpoint refused the request (' + rep['stopped'] + '). Nothing was retried elsewhere; rerun later.')
+    if rep['not_attempted']:
+        print(f"{rep['not_attempted']} tx not attempted (limit --max {args.max}); rerun to continue")
+    print(f"rows still identity-ambiguous: {rep['identity_ambiguous_rows']}. " + rep['completeness'])
     return 0
 
 
@@ -328,6 +392,8 @@ COMMANDS = {
     'sync': _cmd_sync,
     'history': _cmd_history,
     'nfts': _cmd_nfts,
+    'verify-identity': _cmd_verify_identity,
+    'verify-traces': _cmd_verify_traces,
     'check-address': _cmd_check_address,
     'sanctions-update': _cmd_sanctions_update,
     'chains': _cmd_chains,

@@ -18,3 +18,13 @@ RPC_URLS = {
     '56': ['https://bsc-rpc.publicnode.com'],
     '43114': ['https://avalanche-c-chain-rpc.publicnode.com'],
 }
+
+# Receipt endpoints for identity verification (eth_getTransactionReceipt). Order matters: the next one is used only when the
+# previous gave NO answer (null receipt / network error). Refusals (HTTP 401/403/429) stop the run. Observed 2026-11-25:
+# publicnode returned null for many older Ethereum receipts, rpc.mevblocker.io answered all 49 sampled; their terms were not reviewed.
+RECEIPT_RPC_URLS = {**RPC_URLS, '1': ['https://ethereum-rpc.publicnode.com', 'https://rpc.mevblocker.io']}
+
+# Trace endpoints (trace_transaction) for internal-transfer identity. Observed 2026-11-26: only eth.drpc.org answered on Ethereum
+# among 8 free keyless endpoints tried (others: 401/403/406/method unavailable). Free-tier rate limits and terms were NOT reviewed.
+# Refusals (HTTP 401/403/429) stop the run; nothing is rotated around them. Ethereum only: other chains untested.
+TRACE_RPC_URLS = {'1': ['https://eth.drpc.org']}

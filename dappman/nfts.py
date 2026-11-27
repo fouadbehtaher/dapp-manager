@@ -28,12 +28,14 @@ def derive(store, tid, addr):
              for (c, i), (q, s, k) in sorted(bal.items()) if q > 0]
     negative = sum(1 for v in bal.values() if v[0] < 0)  # more out than in: history incomplete for these
     legacy, amb = store.legacy_rows(tid), store.ambiguous_rows(tid)
+    rs = store.receipt_summary(tid)
     return {'items': items, 'derived_from_rows': n_rows, 'inconsistent_tokens': negative,
-            'legacy_rows_excluded': legacy, 'identity_ambiguous_rows': amb,
+            'legacy_rows_excluded': legacy, 'identity_ambiguous_rows': amb, 'receipts': rs,
             'window': 'derived from stored transfers only; unconfirmed: not current ownership (missing/non-standard events, '
                       'partial sync, reorgs, ERC-1155 batch edge cases, burns/mints not independently checked)'
                       + (f'; {legacy} pre-migration rows are excluded until `python3 -m dappman sync` re-fetches them' if legacy else '')
                       + (f'; {amb} rows have byte-identical twins in one tx and the provider gives no log index, so their count is uncertain' if amb else '')
+                      + (f"; receipts: {rs['by_state'].get('verified', 0)} tx verified, {rs['provider_mismatch_txs']} differ from provider rows (receipt used)" if rs['by_state'] else '')
                       + (f'; {negative} token(s) show more out than in, so history is incomplete for them' if negative else '')}
 
 
